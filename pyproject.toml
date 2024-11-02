@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "anime_enhancement"
+version = "0.1.0"
+description = "Real-ESRGAN is a neural network-based super-resolution algorithm that can be used to enhance the quality of anime videos."
+authors = ["Alexander Petrushishin <Olexasha@MrDarwin1859@yandex.ru>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+moviepy = "^1.0.3"
+numpy = "^2.1"
+imageio = "^2.36"
+imageio-ffmpeg = "^0.5.1"
+python-ffmpeg = "^2.0.12"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
