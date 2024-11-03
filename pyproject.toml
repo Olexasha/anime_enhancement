@@ -7,12 +7,51 @@ readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "=3.12.7"
 moviepy = "^1.0.3"
-numpy = "^2.1"
+numpy = "^2.1.2"
 imageio = "^2.36"
 imageio-ffmpeg = "^0.5.1"
-python-ffmpeg = "^2.0.12"
+python-dotenv = "^1.0.1"
+opencv-python = "^4.10.0.84"
+ffmpeg-python = "^0.2.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^22.6.0"
+autoflake = "^2.2.0"
+pre-commit = "^2.7.1"
+isort = "^5.5.4"
+flake8 = "*"
+
+[tool.autoflake]
+remove-all-unused-imports = true
+ignore-init-module-imports = true
+in-place = true
+recursive = true
+quiet = true
+
+[tool.flake8]
+extend-ignore = "E501"
+exclude = [".venv/*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+force-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | .*\.json
+  | .*\.pyc
+)/
+'''
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+line_length = 88
 
 [build-system]
 requires = ["poetry-core"]
