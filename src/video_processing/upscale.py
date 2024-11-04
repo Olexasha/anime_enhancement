@@ -44,10 +44,10 @@ def delete_upscaled_frames(del_only_dirs=True):
 
 def process_frame(frame_path: str, output_path: str):
     """Функция для обработки одного фрейма."""
-    model_dir = "/Users/apetrushishin/PythonProjects/anime_enhancement/src/utils/realesrgan/models/"
+    model_dir = "/home/uzver_pro/PythonProjects/anime_enhancement/src/utils/realesrgan/models"
     model_name = "realesr-animevideov3-x2"
     command = [
-        "./src/utils/realesrgan/realesrgan-macos/realesrgan-ncnn-vulkan",
+        "/home/uzver_pro/PythonProjects/anime_enhancement/src/utils/realesrgan/realesrgan-linux/realesrgan-ncnn-vulkan",
         "-i", frame_path,
         "-o", output_path,
         "-n", model_name,

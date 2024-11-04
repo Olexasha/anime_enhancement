@@ -28,9 +28,9 @@ STEP_PER_BATCH = int(os.getenv("STEP_PER_BATCH", 6))
 FRAMES_PER_BATCH = int(os.getenv("FRAMES_PER_BATCH", 1000))
 
 MERGE_ALL_BATCHES_TO_VIDEO = bool(os.getenv("MERGE_ALL_BATCHES_TO_VIDEO", True))
-ALLOWED_THREADS = int(os.getenv("ALLOWED_THREADS", 2))
+ALLOWED_THREADS = int(os.getenv("ALLOWED_THREADS", 6))
 
 # Настройка апскейла
 UPSCALE_MODEL_NAME = os.getenv("UPSCALE_MODEL_NAME", f"{ROOT_DIR}/src/utils/realesrgan/models/realesr-animevideov3")
-UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 6))
+UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 2))
 OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "jpg")
