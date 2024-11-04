@@ -20,7 +20,7 @@ done
 # Функция для улучшения фреймов в батче
 upscale_batch() {
     local batch_num=$1
-    ./utils/realesrgan/realesrgan-ncnn-vulkan -i "$BATCHES_DIR/batch_$batch_num" -o "$OUTPUT_FRAMES_DIR/batch_$batch_num" -n realesr-animevideov3 -s 2 -f jpg 2>&1 | tee /dev/stdout
+    ./src/utils/realesrgan/realesrgan-linux/realesrgan-ncnn-vulkan -i "$BATCHES_DIR/batch_$batch_num" -o "$OUTPUT_FRAMES_DIR/batch_$batch_num" -n realesr-animevideov3 -s 2 -f jpg 2>&1 | tee /dev/stdout
 }
 
 # Запуск обработки батчей в параллельных процессах
