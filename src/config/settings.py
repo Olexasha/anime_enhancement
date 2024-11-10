@@ -31,6 +31,11 @@ MERGE_ALL_BATCHES_TO_VIDEO = bool(os.getenv("MERGE_ALL_BATCHES_TO_VIDEO", True))
 ALLOWED_THREADS = int(os.getenv("ALLOWED_THREADS", 6))
 
 # Настройка апскейла
-UPSCALE_MODEL_NAME = os.getenv("UPSCALE_MODEL_NAME", f"{ROOT_DIR}/src/utils/realesrgan/models/realesr-animevideov3")
+MODEL_DIR = os.getenv("MODEL_DIR", f"{ROOT_DIR}/src/utils/realesrgan/models")
+MODEL_NAME = os.getenv("MODEL_NAME", "realesr-animevideov3")
+REALESRGAN_SCRIPT = os.getenv(
+    "REALSESRGAN_DIR",
+    f"{ROOT_DIR}/src/utils/realesrgan/realesrgan-linux/realesrgan-ncnn-vulkan",
+)
 UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 2))
 OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "jpg")
