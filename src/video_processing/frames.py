@@ -1,3 +1,4 @@
+import glob
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ from src.config.settings import (
     FRAMES_PER_BATCH,
     INPUT_BATCHES_DIR,
     ORIGINAL_VIDEO,
+    OUTPUT_IMAGE_FORMAT,
 )
 from src.utils.batch_utils import make_default_batch_dir
 
@@ -124,3 +126,24 @@ def extract_frames_to_batches(
 
     video_capture.release()
     print("Извлечение завершено.")
+
+
+def count_total_frames(directory: str) -> int:
+    """Считает общее количество фреймов во всех батчах."""
+    return sum(
+        len(glob.glob(os.path.join(batch, f"*.{OUTPUT_IMAGE_FORMAT}")))
+        for batch in glob.glob(os.path.join(directory, "batch_*"))
+    )
+
+
+def count_frames_in_certain_batches(directory: str, batches_num_range: range) -> int:
+    """Считает общее количество фреймов в указанных батчах."""
+    frames_in_batches = 0
+
+    for batch_num in batches_num_range:
+        batch_dir = os.path.join(directory, f"batch_{batch_num}")
+        frames_in_batches += len(
+            glob.glob(os.path.join(batch_dir, f"*.{OUTPUT_IMAGE_FORMAT}"))
+        )
+
+    return frames_in_batches
