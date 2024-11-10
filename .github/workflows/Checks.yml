@@ -25,8 +25,6 @@ jobs:
         repo-token: ${{ secrets.GITHUB_TOKEN }}
         issue-message: "Хелоу мазафакер! Велкам ту ауэ тим ёпта! Сделаем аниме ещё лучшим дерьмом!"
         pr-message: "Ты красавчик епта! С первым пул реквестом во имя гребаног оаниме, мать его!"
-    - name: CodeThreat Scanner
-      uses: CodeThreat/codethreat-github-action@v1.023
     - name: SonarCloud Scan
       uses: SonarSource/sonarcloud-github-action@v3.1.0
       with:
