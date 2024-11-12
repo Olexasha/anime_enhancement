@@ -137,11 +137,6 @@ class VideoHandler:
             os.rename(final_merge, self.final_video_path)
             print(f"Финальное видео создано: {self.final_video_path}")
 
-    # def __del__(self):
-    #     """Очищает очереди."""
-    #     self.short_video_queue.task_done()
-    #     self.long_video_queue.task_done()
-
     def __str__(self):
         """Возвращает количество видео в очередях."""
         return (

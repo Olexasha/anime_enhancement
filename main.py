@@ -11,10 +11,7 @@ from src.config.settings import (
     TMP_VIDEO_PATH,
 )
 from src.video_processing.audio import extract_audio, insert_audio
-from src.video_processing.frames import (
-    extract_frames_to_batches,
-    get_fps_accurate,
-)
+from src.video_processing.frames import extract_frames_to_batches, get_fps_accurate
 from src.video_processing.upscale import delete_upscaled_frames, upscale_batches
 from src.video_processing.video_assembly import VideoHandler
 
@@ -30,7 +27,9 @@ def main():
     start_batch = START_BATCH_TO_UPSCALE
     end_batch = 0
     tmp_videos_counter = 1
-    tmp_builder = VideoHandler(fps=fps, tmp_video_name=f"tmp_video_{tmp_videos_counter}")
+    tmp_builder = VideoHandler(
+        fps=fps, tmp_video_name=f"tmp_video_{tmp_videos_counter}"
+    )
 
     if END_BATCH_TO_UPSCALE == 0:
         # -1 потому что файл .gitkeep в INPUT_BATCHES_DIR тоже считается
@@ -53,12 +52,12 @@ def main():
         short_video = tmp_builder.process_frames_to_video(batches_to_perform)
         if short_video:
             delete_upscaled_frames()
-            print(
-                f"Партия фреймов {short_video} успешно обработана и объединена."
-            )
+            print(f"Партия фреймов {short_video} успешно обработана и объединена.")
         if tmp_builder.current_short_video_count == tmp_builder.MAX_SHORT_VIDEOS:
             tmp_videos_counter += 1
-            tmp_builder = VideoHandler(fps=fps, tmp_video_name=f"tmp_video_{tmp_videos_counter}")
+            tmp_builder = VideoHandler(
+                fps=fps, tmp_video_name=f"tmp_video_{tmp_videos_counter}"
+            )
 
         start_batch += STEP_PER_BATCH
 
