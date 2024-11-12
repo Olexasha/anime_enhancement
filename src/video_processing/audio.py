@@ -3,14 +3,7 @@ from typing import Optional
 
 from moviepy.editor import AudioFileClip, CompositeAudioClip, VideoFileClip
 
-from src.config.settings import (
-    ALLOWED_THREADS,
-    AUDIO_PATH,
-    FINAL_VIDEO,
-    ORIGINAL_VIDEO,
-    RESOLUTION,
-    TMP_FINAL_VIDEO,
-)
+from src.config.settings import ALLOWED_THREADS, AUDIO_PATH, ORIGINAL_VIDEO, RESOLUTION
 
 
 def get_audio_full_path(video_path: str, audio_dir: str, extension: str = "aac") -> str:
@@ -64,9 +57,9 @@ def extract_audio(
 def insert_audio(
     audio_path: str,
     fps: float,
+    video_path: str,
+    output_path: str,
     audio_format: str = "mp3",
-    video_path: str = TMP_FINAL_VIDEO,
-    output_path: str = FINAL_VIDEO,
     resolution: str = RESOLUTION,
 ) -> None:
     """
