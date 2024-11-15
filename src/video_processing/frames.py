@@ -21,7 +21,6 @@ from src.utils.batch_utils import make_default_batch_dir
 def get_fps_accurate(video_path: str) -> float:
     """
     Возвращает среднее количество кадров в секунду для указанного видео.
-
     :param video_path: Путь к видеофайлу.
     :return: Среднее количество кадров в секунду.
     """
