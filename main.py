@@ -27,6 +27,7 @@ def main():
     start_batch = START_BATCH_TO_UPSCALE
     end_batch = 0
     tmp_videos_counter = 1
+    # Экземпляр tmp видео ~32 минуты, обновляется после ~32 минут
     tmp_builder = VideoHandler(
         fps=fps, tmp_video_name=f"tmp_video_{tmp_videos_counter}"
     )
