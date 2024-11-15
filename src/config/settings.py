@@ -25,9 +25,9 @@ ALLOWED_THREADS = int(os.getenv("ALLOWED_THREADS", 6))
 # Настройка апскейла
 MODEL_DIR = os.path.join(ROOT_DIR, "src", "utils", "realesrgan", "models")
 MODEL_NAME = os.getenv("MODEL_NAME", "realesr-animevideov3")
-OS = os.getenv("OS", "linux")
+_OS = os.getenv("_OS", "linux")
 REALESRGAN_SCRIPT = os.path.join(
-    ROOT_DIR, "src", "utils", "realesrgan", f"realesrgan-{OS}", "realesrgan-ncnn-vulkan"
+    ROOT_DIR, "src", "utils", "realesrgan", f"realesrgan-{_OS}", f"realesrgan-ncnn-vulkan{".exe" if _OS == 'win' else ""}"
 )
 UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 2))
 OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "jpg")
