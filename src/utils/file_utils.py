@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 
-def create_dir(path: str, dir_name: str) -> str:
+def create_dir(path: str, dir_name: str) -> Path:
     """
     Создает директорию с указанным именем в заданном пути.
     :param path: Базовый путь для создания директории.
@@ -12,7 +12,7 @@ def create_dir(path: str, dir_name: str) -> str:
     """
     new_dir = Path(path) / dir_name
     new_dir.mkdir(parents=True, exist_ok=True)
-    return str(new_dir)
+    return Path(new_dir)
 
 
 def delete_dir(dir_path: str) -> None:
