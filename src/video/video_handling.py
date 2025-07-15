@@ -16,7 +16,6 @@ class VideoHandler:
 
     def __init__(self, fps: float):
         self.fps = fps
-        self.curr_short_video_count = 0
         self.video_queue = FIFOPriorityQueue()
 
     @staticmethod
@@ -79,7 +78,6 @@ class VideoHandler:
         finally:
             out.release()
 
-        self.curr_short_video_count += 1
         print(f"✅ Видео успешно создано: {video_path} (FPS: {self.fps})")
         return video_path
 
