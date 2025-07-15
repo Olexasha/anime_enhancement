@@ -34,25 +34,27 @@ def extract_audio(
     :return: Путь к созданному аудиофайлу или None, если аудиопоток не найден.
     """
     audio_file = get_audio_full_path(video_path, audio_path, extension)
+    print(f"\n🎵 Начинаем извлечение аудио из видео...")
+    print(f"📁 Видео: {video_path}")
+    print(f"🎧 Выходной файл: {audio_file}")
     with VideoFileClip(video_path) as clip:
-        if clip.audio:
-            print(
-                f"Планируется временное извлечение аудиодорожки из видео со следующими параметрами:"
-                f"\n\tкодек - `{'libmp3lame' if extension == 'mp3' else extension}`"
-                f"\n\tбитрейт - `192k`"
-                f"\n\tчастота дискретизации - `44100`"
-                f"\n\tколичество каналов - `2`"
-            )
-            clip.audio.write_audiofile(
-                audio_file,
-                codec="libmp3lame" if extension == "mp3" else extension,
-                bitrate="192k",
-                ffmpeg_params=["-vn", "-ar", "44100", "-ac", "2"],
-            )
-            return audio_file
-        else:
-            print("Аудио не найдено в видеофайле.")
+        if not clip.audio:
+            print("🚨 Ошибка: аудио не найдено в видеофайле.")
             return None
+
+        print(f"🔊 Параметры извлечения аудио:")
+        print(f"\t🔉 Кодек: {'libmp3lame' if extension == 'mp3' else extension}")
+        print(f"\t🎚️ Битрейт: 192k")
+        print(f"\t🎛️ Частота дискретизации: 44100 Hz")
+        print(f"\t🎧 Каналы: 2 (стерео)")
+
+        clip.audio.write_audiofile(
+            audio_file,
+            codec="libmp3lame" if extension == "mp3" else extension,
+            bitrate="192k",
+            ffmpeg_params=["-vn", "-ar", "44100", "-ac", "2"],
+        )
+        return audio_file
 
 
 def insert_audio(
@@ -74,19 +76,23 @@ def insert_audio(
     :param resolution: Разрешение видео ('4K' или '8K'), чтобы задать соответствующий битрейт. По умолчанию '4K'.
     :return: None
     """
+    print(f"\n🎬 Начинаем добавление аудио к видео...")
+    print(f"📹 Видео: {video_path}")
+    print(f"🎧 Аудио: {audio_path}")
+    print(f"💾 Выходной файл: {output_path}")
+
     with VideoFileClip(video_path) as video, AudioFileClip(audio_path) as audio:
         audio_set = CompositeAudioClip([audio])
         video_with_audio = video.with_audio(audio_set)
-        print(
-            f"Планируется добавление аудиодорожки в видео со следующими параметрами:"
-            f"\n\tкодек - `libx265`"
-            f"\n\tформат аудио - `{audio_format}`"
-            f"\n\tчастота кадров - `{fps}`"
-            f"\n\tпресет - `slow`"
-            f"\n\tколичество потоков - `{ALLOWED_THREADS}`"
-            f"\n\tбитрейт - `{'20000k' if resolution == '4K' else '40000k'}`"
-            f"\n\tразрешение - `{resolution}`"
-        )
+        bitrate = "20000k" if resolution == "4K" else "40000k"
+        print(f"\n⚙️ Параметры обработки:")
+        print(f"\t🎞️ Кодек видео: libx265")
+        print(f"\t🔊 Кодек аудио: {audio_format}")
+        print(f"\t⏱️ FPS: {fps}")
+        print(f"\t⚡ Пресет: slow")
+        print(f"\t🧵 Потоков: {ALLOWED_THREADS}")
+        print(f"\t💽 Битрейт: {bitrate}")
+        print(f"\t🖥️ Разрешение: {resolution}")
         video_with_audio.write_videofile(
             output_path,
             codec="libx265",
@@ -94,8 +100,10 @@ def insert_audio(
             fps=fps,
             preset="slow",
             threads=ALLOWED_THREADS,
-            bitrate="20000k" if resolution == "4K" else "40000k",
+            bitrate=bitrate,
         )
     delete_file(audio_path)
     delete_file(video_path)
-    print(f"Аудиодорожка добавлена в видеофайл {output_path}.")
+    print(
+        f"✅ Аудио успешно добавлено в видео. Итоговое видео сохранено в {output_path}"
+    )
