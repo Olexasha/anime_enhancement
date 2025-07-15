@@ -4,7 +4,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
-import ffmpeg
 from colorama import Fore, Style
 from tqdm import tqdm
 
@@ -30,29 +29,6 @@ def get_fps_accurate(video_path: str) -> float:
         raise Exception(f"Не удалось открыть видео {video_path}")
 
     print(f"Файл {video_path} существует и доступен для обработки.")
-    # Получаем метаданные видео с помощью ffmpeg
-    # metadata = ffmpeg.probe(video_path)
-    # duration = float(metadata["format"]["duration"])
-    # if duration == 0:
-    #     raise ZeroDivisionError("Видео имеет нулевую длительность")
-    #
-    # # Пытаемся получить количество кадров из метаданных
-    # nb_frames = metadata["streams"][0].get("nb_frames")
-    # if nb_frames is not None:
-    #     print(f"В метаданных видеофайла есть информация о количестве кадров...")
-    #     frames = int(nb_frames)
-    # else:
-    #     # Если информация о количестве кадров отсутствует, считаем их с помощью OpenCV
-    #     print(f"Считаем количество кадров с помощью OpenCV...")
-    #     frames = 0
-    #     while True:
-    #         ret, _ = cap.read()
-    #         if not ret:
-    #             break
-    #         frames += 1
-    #
-    # cap.release()
-    # fps = frames / duration
     fps = cap.get(cv2.CAP_PROP_FPS)
     print(f"\tСреднее количество кадров в секунду: {fps}")
     return fps
