@@ -14,7 +14,7 @@ from src.config.settings import (
     ORIGINAL_VIDEO,
     OUTPUT_IMAGE_FORMAT,
 )
-from src.utils.batch_utils import make_default_batch_dir
+from src.frames.batch_utils import make_default_batch_dir
 
 
 def get_fps_accurate(video_path: str) -> float:
