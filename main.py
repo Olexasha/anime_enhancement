@@ -87,7 +87,7 @@ def main():
 
     if audio:
         print("\n🔊 Добавляем аудиодорожку к финальному видео...")
-        insert_audio(audio, fps, video_path=final_merge, output_path=FINAL_VIDEO)
+        insert_audio(audio_path=audio, video_path=final_merge, output_path=FINAL_VIDEO)
         print(f"✅ Аудио добавлено к {FINAL_VIDEO}")
     else:
         print("\n🔇 Финальное видео сохранено без звука")
