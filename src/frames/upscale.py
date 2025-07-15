@@ -19,8 +19,8 @@ from src.config.settings import (
     REALESRGAN_SCRIPT,
     UPSCALE_FACTOR,
 )
+from src.frames.frames_helpers import count_frames_in_certain_batches
 from src.utils.file_utils import create_dir, delete_dir, delete_object
-from src.video_processing.frames import count_frames_in_certain_batches
 
 
 def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):

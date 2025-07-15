@@ -20,6 +20,19 @@ def get_audio_full_path(video_path: str, audio_dir: str, extension: str = "aac")
     return os.path.join(audio_dir, f"{filename}.{extension}")
 
 
+def delete_audio_if_exists(audio_path: str) -> None:
+    """
+    Удаляет аудиофайл, если он существует.
+
+    :param audio_path: Путь к аудиофайлу.
+    """
+    if os.path.exists(audio_path):
+        delete_file(audio_path)
+        print(f"🗑️ Аудиофайл {audio_path} успешно удален.")
+    else:
+        print(f"⚠️ Аудиофайл {audio_path} не найден, удаление не требуется.")
+
+
 def extract_audio(
     video_path: str = ORIGINAL_VIDEO,
     audio_path: str = AUDIO_PATH,
@@ -34,6 +47,7 @@ def extract_audio(
     :return: Путь к созданному аудиофайлу или None, если аудиопоток не найден.
     """
     audio_file = get_audio_full_path(video_path, audio_path, extension)
+    delete_audio_if_exists(audio_file)
     print(f"\n🎵 Начинаем извлечение аудио из видео...")
     print(f"📁 Видео: {video_path}")
     print(f"🎧 Выходной файл: {audio_file}")

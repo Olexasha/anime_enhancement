@@ -1,11 +1,11 @@
 import glob
 import os
-from queue import PriorityQueue
 
 import cv2
 
 from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO
 from src.utils.file_utils import delete_file
+from src.video.video_helpers import FIFOPriorityQueue
 
 
 class VideoHandler:
@@ -17,7 +17,7 @@ class VideoHandler:
     def __init__(self, fps: float):
         self.fps = fps
         self.curr_short_video_count = 0
-        self.video_queue = PriorityQueue()
+        self.video_queue = FIFOPriorityQueue()
 
     @staticmethod
     def _build_video_path(video_name: str, path=BATCH_VIDEO_PATH):
@@ -122,9 +122,13 @@ class VideoHandler:
         height = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         # Создаем имя для объединенного видео
-        video_1 = os.path.basename(first_video).split(".")[0].split("_")[-1]
-        video_2 = os.path.basename(second_video).split(".")[0].split("_")[-1]
-        merged_video_path = self._build_video_path(f"merged_{video_1}_{video_2}")
+        video_1 = (
+            os.path.basename(first_video).split(".")[0].split("_")[-1].split("-")[0]
+        )
+        video_2 = (
+            os.path.basename(second_video).split(".")[0].split("_")[-1].split("-")[-1]
+        )
+        merged_video_path = self._build_video_path(f"merged_{video_1}-{video_2}")
 
         # Инициализируем VideoWriter
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -163,6 +167,10 @@ class VideoHandler:
         while self.video_queue.qsize() >= 2:
             priority1, video1 = self.video_queue.get()
             priority2, video2 = self.video_queue.get()
+            if priority1 < priority2:
+                self.video_queue.put((priority1 + 1, video1))
+                priority1, video1 = priority2, video2
+                priority2, video2 = self.video_queue.get()
             print(f"\n🔧 Объединяем видео с приоритетами {priority1} и {priority2}")
             merged_video = self._merge_two_videos(video1, video2)
             new_priority = max(priority1, priority2) + 1

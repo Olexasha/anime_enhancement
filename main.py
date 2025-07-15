@@ -1,6 +1,8 @@
 import asyncio
 import os
+from datetime import datetime
 
+from src.audio.audio_handling import extract_audio, insert_audio
 from src.config.settings import (
     END_BATCH_TO_UPSCALE,
     FINAL_VIDEO,
@@ -9,10 +11,9 @@ from src.config.settings import (
     START_BATCH_TO_UPSCALE,
     STEP_PER_BATCH,
 )
-from src.video_processing.audio import extract_audio, insert_audio
-from src.video_processing.frames import extract_frames_to_batches, get_fps_accurate
-from src.video_processing.upscale import delete_frames, upscale_batches
-from src.video_processing.video_assembly import VideoHandler
+from src.frames.frames_helpers import extract_frames_to_batches, get_fps_accurate
+from src.frames.upscale import delete_frames, upscale_batches
+from src.video.video_handling import VideoHandler
 
 
 def print_header(title: str) -> None:
@@ -24,6 +25,7 @@ def print_header(title: str) -> None:
 
 def main():
     """Основной процесс обработки видео."""
+    start_time = datetime.now()
     print_header("запуск обработки видео")
 
     print("\n📹 Получаем FPS исходного видео...")
@@ -92,6 +94,8 @@ def main():
 
     print_header("обработка завершена")
     print(f"\n🎉 Итоговое видео сохранено: {FINAL_VIDEO}")
+    end_time = datetime.now()
+    print(f"⏰ Время выполнения: {end_time - start_time}")
     print("=" * 50)
 
 
