@@ -1,9 +1,10 @@
 import os
 from typing import Optional
 
-from moviepy.editor import AudioFileClip, CompositeAudioClip, VideoFileClip
+from moviepy import AudioFileClip, CompositeAudioClip, VideoFileClip
 
 from src.config.settings import ALLOWED_THREADS, AUDIO_PATH, ORIGINAL_VIDEO, RESOLUTION
+from src.utils.file_utils import delete_file
 
 
 def get_audio_full_path(video_path: str, audio_dir: str, extension: str = "aac") -> str:
@@ -75,7 +76,7 @@ def insert_audio(
     """
     with VideoFileClip(video_path) as video, AudioFileClip(audio_path) as audio:
         audio_set = CompositeAudioClip([audio])
-        video_with_audio = video.set_audio(audio_set)
+        video_with_audio = video.with_audio(audio_set)
         print(
             f"Планируется добавление аудиодорожки в видео со следующими параметрами:"
             f"\n\tкодек - `libx265`"
@@ -95,4 +96,6 @@ def insert_audio(
             threads=ALLOWED_THREADS,
             bitrate="20000k" if resolution == "4K" else "40000k",
         )
-        print(f"Аудиодорожка добавлена в видеофайл {output_path}.")
+    delete_file(audio_path)
+    delete_file(video_path)
+    print(f"Аудиодорожка добавлена в видеофайл {output_path}.")

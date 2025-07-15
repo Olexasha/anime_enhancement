@@ -1,11 +1,11 @@
 import glob
 import os
-from queue import PriorityQueue, Queue
+from queue import PriorityQueue
 
 import ffmpeg
-from moviepy.editor import VideoFileClip, concatenate_videoclips
+from moviepy import VideoFileClip, concatenate_videoclips
 
-from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO_PATH
+from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO
 from src.utils.file_utils import delete_file
 
 
@@ -15,17 +15,10 @@ class VideoHandler:
     автоматическим управлением очередями объединения.
     """
 
-    # Максимальный размер очереди для коротких видео перед началом их объединения
-    MAX_MERGE_QUEUE_SIZE = 4
-    MAX_SHORT_VIDEOS = 8
-
-    def __init__(self, fps: float, tmp_video_name: str = ""):
+    def __init__(self, fps: float):
         self.fps = fps
-        self.current_short_video_count = 0
-        self.final_video_name = tmp_video_name
-        self.short_video_queue = Queue(maxsize=2)
-        self.long_video_queue = PriorityQueue(maxsize=self.MAX_MERGE_QUEUE_SIZE)
-        self.final_video_path = ""
+        self.curr_short_video_count = 0
+        self.video_queue = PriorityQueue()
 
     @staticmethod
     def _build_video_path(video_name, path=BATCH_VIDEO_PATH):
@@ -62,10 +55,10 @@ class VideoHandler:
         ffmpeg.input(frames_file_path, format="concat", safe=0).output(
             video_path, vcodec="libx264", pix_fmt="yuv420p", crf=18, r=self.fps
         ).run()
-        self.current_short_video_count += 1
+        self.curr_short_video_count += 1
         return video_path
 
-    def process_frames_to_video(self, frame_batches):
+    def process_frames_to_video(self, frame_batches: list):
         """Собирает обработанные фреймы из батчей в одно короткое видео."""
         batch_range_start = frame_batches[0].split("_")[1]
         batch_range_end = frame_batches[-1].split("_")[1]
@@ -77,21 +70,10 @@ class VideoHandler:
         )
         delete_file(frames_file_path)  # Удаляем временный файл списка фреймов
 
-        self._add_to_queues(video_path)
+        self.video_queue.put(
+            (0, video_path)
+        )  # Добавляем видео в очередь с макс приоритетом
         return video_path
-
-    def _add_to_queues(self, video_path):
-        """Добавляет видео в очереди и выполняет объединение при необходимости."""
-        self.short_video_queue.put(video_path)
-        if self.short_video_queue.full():
-            merged_video = self._merge_two_videos(
-                self.short_video_queue.get(), self.short_video_queue.get()
-            )
-            # 2 шортса, объединённые в один - это макс приоритет - 0
-            self.long_video_queue.put((0, merged_video))
-
-        if self.long_video_queue.full():
-            self._merge_long_videos()
 
     def _merge_two_videos(self, first_video, second_video):
         """Объединяет два видео в одно."""
@@ -100,8 +82,10 @@ class VideoHandler:
                 second_video
             ) as clip2:
                 combined_clip = concatenate_videoclips([clip1, clip2])
+                video_1 = os.path.basename(first_video).split(".")[0].split("_")[-1]
+                video_2 = os.path.basename(second_video).split(".")[0].split("_")[-1]
                 merged_video_path = self._build_video_path(
-                    f"merged_{os.path.basename(first_video).split('.')[0]}_{os.path.basename(second_video).split('.')[0]}"
+                    f"merged_{video_1}_{video_2}"
                 )
                 combined_clip.write_videofile(
                     merged_video_path, codec="libx264", fps=self.fps
@@ -116,33 +100,28 @@ class VideoHandler:
                 f"Не удается найти одно из видео: {first_video} или {second_video}"
             )
 
-    def _merge_long_videos(self):
+    def build_final_video(self):
         """Выполняет попарное объединение видео из основной очереди."""
-        while self.long_video_queue.qsize() >= 2:
+        while self.video_queue.qsize() >= 2:
             # если количество видео "побольше" в очереди больше 2х, то объединяем их и
             # кладём в очередь. Повторяем до тех пор, пока не останется лишь 1 tmp видео
-            priority, first_video = self.long_video_queue.get()
-            _, second_video = self.long_video_queue.get()
-            merged_video = priority + 1, self._merge_two_videos(
-                first_video, second_video
-            )
-            self.long_video_queue.put(merged_video)
+            priority1, video1 = self.video_queue.get()
+            priority2, video2 = self.video_queue.get()
+            merged_video = self._merge_two_videos(video1, video2)
+            new_priority = max(priority1, priority2) + 1
+            self.video_queue.put((new_priority, merged_video))
 
-        if self.long_video_queue.qsize() == 1:
+        if self.video_queue.qsize() == 1:
             # если в длинной очереди осталось лишь 1 видео, то отдаем видео и путь к нему
-            _, final_merge = self.long_video_queue.get()
-            self.final_video_path = self._build_video_path(
-                self.final_video_name, TMP_VIDEO_PATH
-            )
-            os.rename(final_merge, self.final_video_path)
-            print(f"Финальное видео создано: {self.final_video_path}")
+            _, final_merge = self.video_queue.get()
+            os.rename(final_merge, TMP_VIDEO)
+            print(f"Финальное видео создано: {TMP_VIDEO}")
+            return TMP_VIDEO
+        return None
 
     def __str__(self):
         """Возвращает количество видео в очередях."""
-        return (
-            f"Количество шортсов в очереди: {self.short_video_queue.qsize()}"
-            f"Количество длинных видео в очереди: {self.long_video_queue.qsize()}"
-        )
+        return f"Количество видео в очереди: {self.video_queue.qsize()}"
 
     def __repr__(self):
         """Возвращает количество видео в очередях."""

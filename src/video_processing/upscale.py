@@ -23,13 +23,17 @@ from src.utils.file_utils import create_dir, delete_dir, delete_object
 from src.video_processing.frames import count_frames_in_certain_batches
 
 
-def delete_upscaled_frames(del_only_dirs=True):
+def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
     """
     Удаляет кадры из указанной директории.
     Если `del_only_dirs` установлено в True, удаляются только директории, иначе — и файлы, и директории.
+    :param del_upscaled: Флаг для удаления апскейленных фреймов. Если True, удаляет фреймы из OUTPUT_BATCHES_DIR.
     :param del_only_dirs: Флаг для удаления только директорий. Если False, удаляет и файлы, и директории.
     """
-    file_paths = glob.glob(os.path.join(OUTPUT_BATCHES_DIR, "*"))
+    if del_upscaled:
+        file_paths = glob.glob(os.path.join(OUTPUT_BATCHES_DIR, "*"))
+    else:
+        file_paths = glob.glob(os.path.join(INPUT_BATCHES_DIR, "*"))
 
     for file_path in file_paths:
         try:
@@ -74,6 +78,12 @@ def _upscale(batch_num: int):
     """Функция улучшения фреймов в батче."""
     input_dir = Path(INPUT_BATCHES_DIR) / f"batch_{batch_num}"
     output_dir = create_dir(OUTPUT_BATCHES_DIR, f"batch_{batch_num}")
+
+    if not os.path.exists(REALESRGAN_SCRIPT):
+        print(
+            f"Файл скрипта нейронки для батча {batch_num} не найден: {REALESRGAN_SCRIPT}"
+        )
+        return 1
 
     command = [
         REALESRGAN_SCRIPT,
