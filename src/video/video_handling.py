@@ -64,6 +64,7 @@ class VideoHandler:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(video_path, fourcc, self.fps, (width, height))
         try:
+            total_frames = len(frame_paths)
             for i, frame_path in enumerate(frame_paths):
                 frame = cv2.imread(frame_path)
                 if frame is None:
@@ -71,17 +72,17 @@ class VideoHandler:
                     continue
                 out.write(frame)
 
-                # Выводим прогресс каждые 200 кадров
+                # Выводим прогресс каждые 300 кадров
                 frame_num = i + 1
-                if frame_num % 200 == 0 or frame_num == len(frame_paths):
-                    print(f"📹 Обработано кадров: {i + 1}/{len(frame_paths)}")
+                if frame_num % 300 == 0 or frame_num == total_frames:
+                    print(f"📹 Обработано кадров: {i + 1}/{total_frames}")
         finally:
             out.release()
 
         print(f"✅ Видео успешно создано: {video_path} (FPS: {self.fps})")
         return video_path
 
-    def process_frames_to_video(self, frame_batches: list):
+    def process_frames_to_video(self, frame_batches: list) -> str:
         """
         Собирает обработанные фреймы из батчей в одно короткое видео.
         :param frame_batches: Список имен батчей, из которых нужно собрать фреймы.

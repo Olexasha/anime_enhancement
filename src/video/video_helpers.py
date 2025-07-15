@@ -2,6 +2,8 @@ import itertools
 from queue import PriorityQueue
 from typing import Any
 
+import cv2
+
 
 class FIFOPriorityQueue(PriorityQueue):
     """Класс очереди с приоритетом, реализующий FIFO (First In, First Out) логику."""
@@ -21,3 +23,26 @@ class FIFOPriorityQueue(PriorityQueue):
             raise IndexError("Очередь пуста")
         item = super().get()
         return item[0], item[2]  # item[0] - приоритет, item[2] - данные
+
+
+def get_video_duration(
+    video_path: str, return_fps_too: bool = False
+) -> float | tuple[float, float]:
+    """
+    Возвращает продолжительность видео в секундах.
+
+    :param video_path: Путь к видеофайлу.
+    :param return_fps_too: Если True, возвращает кортеж (длительность, FPS). По умолчанию False.
+    :return: Продолжительность видео в секундах.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise Exception(f"Не удалось открыть видео {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    duration = frame_count / fps
+    cap.release()
+    if return_fps_too:
+        return duration, fps
+    return duration
