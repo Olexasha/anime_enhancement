@@ -83,22 +83,16 @@ def _upscale(batch_num: int):
         print(
             f"Файл скрипта нейронки для батча {batch_num} не найден: {REALESRGAN_SCRIPT}"
         )
-        return 1
+        raise FileNotFoundError(REALESRGAN_SCRIPT)
 
     command = [
         REALESRGAN_SCRIPT,
-        "-i",
-        str(input_dir),
-        "-o",
-        output_dir,
-        "-n",
-        MODEL_NAME,
-        "-s",
-        str(UPSCALE_FACTOR),
-        "-f",
-        OUTPUT_IMAGE_FORMAT,
-        "-m",
-        MODEL_DIR,
+        "-i", str(input_dir),
+        "-o", output_dir,
+        "-n", MODEL_NAME,
+        "-s", str(UPSCALE_FACTOR),
+        "-f", OUTPUT_IMAGE_FORMAT,
+        "-m", MODEL_DIR,
     ]
 
     result = subprocess.run(command, capture_output=True, text=True)
