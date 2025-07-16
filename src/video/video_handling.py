@@ -1,3 +1,4 @@
+import asyncio
 import glob
 import os
 
@@ -39,7 +40,7 @@ class VideoHandler:
             print(f"📂 Собрано {len(frame_paths)} фреймов из {len(batches_list)} батчей")
         return frame_paths
 
-    def _generate_video_from_frames(
+    async def _generate_video_from_frames(
         self, frame_paths: list, batch_range_start: str, batch_range_end: str
     ) -> str:
         """
@@ -49,40 +50,47 @@ class VideoHandler:
         :param batch_range_end: Конечный номер батча для именования видео.
         :return: Путь к созданному видеофайлу.
         """
-        video_path = self._build_video_path(
-            f"short_{batch_range_start}-{batch_range_end}"
-        )
-        print(f"🎥 Начинаем создание видео из {len(frame_paths)} фреймов...")
 
-        # Получаем размер первого кадра для инициализации VideoWriter
-        first_frame = cv2.imread(frame_paths[0])
-        if first_frame is None:
-            raise ValueError(f"🚨 Не удалось прочитать первый кадр: {frame_paths[0]}")
-        height, width, _ = first_frame.shape
+        def __generate():
+            video_path = self._build_video_path(
+                f"short_{batch_range_start}-{batch_range_end}"
+            )
+            print(f"🎥 Начинаем создание видео из {len(frame_paths)} фреймов...")
 
-        # Инициализируем VideoWriter
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(video_path, fourcc, self.fps, (width, height))
-        try:
-            total_frames = len(frame_paths)
-            for i, frame_path in enumerate(frame_paths):
-                frame = cv2.imread(frame_path)
-                if frame is None:
-                    print(f"⚠️ Пропущен кадр (не удалось прочитать): {frame_path}")
-                    continue
-                out.write(frame)
+            # Получаем размер первого кадра для инициализации VideoWriter
+            first_frame = cv2.imread(frame_paths[0])
+            if first_frame is None:
+                raise ValueError(
+                    f"🚨 Не удалось прочитать первый кадр: {frame_paths[0]}"
+                )
+            height, width, _ = first_frame.shape
 
-                # Выводим прогресс каждые 300 кадров
-                frame_num = i + 1
-                if frame_num % 300 == 0 or frame_num == total_frames:
-                    print(f"📹 Обработано кадров: {i + 1}/{total_frames}")
-        finally:
-            out.release()
+            # Инициализируем VideoWriter
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(video_path, fourcc, self.fps, (width, height))
+            try:
+                total_frames = len(frame_paths)
+                for i, frame_path in enumerate(frame_paths):
+                    frame = cv2.imread(frame_path)
+                    if frame is None:
+                        print(f"⚠️ Пропущен кадр (не удалось прочитать): {frame_path}")
+                        continue
+                    out.write(frame)
 
-        print(f"✅ Видео успешно создано: {video_path} (FPS: {self.fps})")
-        return video_path
+                    # Выводим прогресс каждые 300 кадров
+                    frame_num = i + 1
+                    if frame_num % 300 == 0 or frame_num == total_frames:
+                        print(f"📹 Обработано кадров: {i + 1}/{total_frames}")
+            finally:
+                out.release()
 
-    def process_frames_to_video(self, frame_batches: list) -> str:
+            print(f"✅ Видео успешно создано: {video_path} (FPS: {self.fps})")
+            return video_path
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, __generate)
+
+    async def process_frames_to_video(self, frame_batches: list) -> str:
         """
         Собирает обработанные фреймы из батчей в одно короткое видео.
         :param frame_batches: Список имен батчей, из которых нужно собрать фреймы.
@@ -92,7 +100,7 @@ class VideoHandler:
         batch_range_start = frame_batches[0].split("_")[1]
         batch_range_end = frame_batches[-1].split("_")[1]
         frame_paths = self._collect_frames(frame_batches)
-        video_path = self._generate_video_from_frames(
+        video_path = await self._generate_video_from_frames(
             frame_paths, batch_range_start, batch_range_end
         )
         self.video_queue.put((0, video_path))
@@ -175,7 +183,7 @@ class VideoHandler:
             new_priority = max(priority1, priority2) + 1
             self.video_queue.put((new_priority, merged_video))
             print(
-                f"📤 Объединенное видео добавлено в очередь с приоритетом {new_priority}"
+                f"Объединенное видео добавлено в очередь с приоритетом {new_priority}"
             )
 
         if self.video_queue.qsize() == 1:
