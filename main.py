@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from datetime import datetime
 
 from src.audio.audio_handling import AudioHandler
@@ -28,23 +29,25 @@ async def main():
     start_time = datetime.now()
     print_header("запуск обработки видео")
 
-    print("\n📹 Получаем FPS исходного видео...")
     fps = await asyncio.to_thread(get_fps_accurate, ORIGINAL_VIDEO)
-    print(f"✅ FPS видео: {fps}")
-
     audio = AudioHandler()
     video = VideoHandler(fps=fps)
 
-    print("\n🔊 Извлекаем аудиодорожку...")
     await asyncio.create_task(audio.extract_audio())
     await asyncio.to_thread(extract_frames_to_batches)
-    print("✅ Кадры успешно извлечены")
 
     # Определяем диапазон батчей для обработки
     start_batch = START_BATCH_TO_UPSCALE
     end_batch = 0
     if END_BATCH_TO_UPSCALE == 0:
-        end_batch_to_upscale = len(os.listdir(INPUT_BATCHES_DIR)) - 1  # -1 для .gitkeep
+        batch_name_pattern = re.compile(r"batch_(\d+)")
+        end_batch_to_upscale = len(
+            [
+                batch
+                for batch in os.listdir(INPUT_BATCHES_DIR)
+                if batch_name_pattern.match(batch)
+            ]
+        )
     else:
         end_batch_to_upscale = END_BATCH_TO_UPSCALE
     print(f"\nВсего батчей для обработки: {end_batch_to_upscale}")
@@ -65,8 +68,9 @@ async def main():
         print(f"✅ Батчи {start_batch}-{end_batch} успешно апскейлены")
 
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
-        short_video = await video.process_frames_to_video(batches_to_perform)
+        short_video = await video.build_short_video(batches_to_perform)
         if short_video:
+            await asyncio.to_thread(delete_frames, del_upscaled=False)
             await asyncio.to_thread(delete_frames, del_upscaled=True)
             print(f"🎥 Видео собрано: {short_video}")
             print(f"🗑️ Обработанные кадры удалены из батчей {start_batch}-{end_batch}")
@@ -74,7 +78,6 @@ async def main():
         start_batch += STEP_PER_BATCH
 
     print_header("финальная сборка видео")
-    await asyncio.to_thread(delete_frames, del_upscaled=False)
     # Сборка финального видео из временных видео
     final_merge = video.build_final_video()
 

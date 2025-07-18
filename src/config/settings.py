@@ -8,7 +8,7 @@ ROOT_DIR = os.getcwd()
 # Пути к файлам
 ORIGINAL_VIDEO = os.path.join(ROOT_DIR, "data", "input_video", "naruto_test.mp4")
 AUDIO_PATH = os.path.join(ROOT_DIR, "data", "audio")
-TMP_VIDEO = os.path.join(ROOT_DIR, "data", "tmp_video", "final_merge.mp4")
+TMP_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "tmp_video")
 FINAL_VIDEO = os.path.join(ROOT_DIR, "data", "output_video", "final_video.mp4")
 BATCH_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "video_batches")
 INPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "default_frame_batches")
@@ -20,7 +20,8 @@ START_BATCH_TO_UPSCALE = int(os.getenv("START_BATCH_TO_UPSCALE", 1))
 END_BATCH_TO_UPSCALE = int(os.getenv("END_BATCH_TO_UPSCALE", 0))
 STEP_PER_BATCH = int(os.getenv("STEP_PER_BATCH", 6))
 FRAMES_PER_BATCH = int(os.getenv("FRAMES_PER_BATCH", 1000))
-ALLOWED_THREADS = int(os.getenv("ALLOWED_THREADS", 6))
+ALLOWED_CPU_THREADS = int(os.getenv("ALLOWED_THREADS", 6))
+ALLowed_GPU_THREADS = int(os.getenv("ALLOWED_GPU_THREADS", 1))
 
 # Настройка апскейла
 MODEL_DIR = os.path.join(ROOT_DIR, "src", "utils", "realesrgan", "models")

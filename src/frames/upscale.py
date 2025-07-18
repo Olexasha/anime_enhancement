@@ -10,7 +10,7 @@ from colorama import Fore, Style
 from tqdm import tqdm
 
 from src.config.settings import (
-    ALLOWED_THREADS,
+    ALLOWED_CPU_THREADS,
     INPUT_BATCHES_DIR,
     MODEL_DIR,
     MODEL_NAME,
@@ -118,7 +118,7 @@ async def upscale_batches(start_batch: int, end_batch: int):
         # Запускаем обработку батчей с использованием ProcessPoolExecutor
         loop = asyncio.get_event_loop()
 
-        with ProcessPoolExecutor(max_workers=ALLOWED_THREADS) as executor:
+        with ProcessPoolExecutor(max_workers=ALLOWED_CPU_THREADS) as executor:
             tasks = [
                 loop.run_in_executor(executor, _upscale, batch_num)
                 for batch_num in batches_range

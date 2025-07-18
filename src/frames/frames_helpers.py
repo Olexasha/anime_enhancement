@@ -8,7 +8,7 @@ from colorama import Fore, Style
 from tqdm import tqdm
 
 from src.config.settings import (
-    ALLOWED_THREADS,
+    ALLOWED_CPU_THREADS,
     FRAMES_PER_BATCH,
     INPUT_BATCHES_DIR,
     ORIGINAL_VIDEO,
@@ -80,7 +80,7 @@ def extract_frames_to_batches(
         colour="green",
         file=sys.stdout,
     ) as pbar:
-        with ThreadPoolExecutor(max_workers=ALLOWED_THREADS) as executor:
+        with ThreadPoolExecutor(max_workers=ALLOWED_CPU_THREADS) as executor:
             current_batch_dir = make_default_batch_dir(output_dir)
 
             while True:

@@ -1,6 +1,7 @@
 import itertools
+import re
 from queue import PriorityQueue
-from typing import Any
+from typing import Any, List
 
 import cv2
 
@@ -45,3 +46,17 @@ def get_video_duration(
     if return_fps_too:
         return duration, fps
     return duration
+
+
+def sort_video_paths(paths: List[str]) -> List[str]:
+    """
+    Сортирует список путей к видеофайлам по числовым значениям в их именах.
+    :param paths: Список путей к видеофайлам.
+    :return: Отсортированный список путей к видеофайлам.
+    """
+    def __extract_numbers(item: str) -> int:
+        path = item
+        match = re.search(r"(\d+)-(\d+)\.mp4$", path)
+        return int(match.group(1)) if match else 0
+
+    return sorted(paths, key=__extract_numbers)

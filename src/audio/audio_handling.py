@@ -9,12 +9,12 @@ from src.audio.audio_helpers import (
     run_ffmpeg_command_with_progress,
 )
 from src.config.settings import (
-    ALLOWED_THREADS,
+    ALLOWED_CPU_THREADS,
     AUDIO_PATH,
     FINAL_VIDEO,
     ORIGINAL_VIDEO,
     RESOLUTION,
-    TMP_VIDEO,
+    TMP_VIDEO_PATH,
 )
 from src.utils.file_utils import delete_file
 from src.video.video_helpers import get_video_duration
@@ -32,7 +32,7 @@ class AudioHandler:
     def __init__(
         self,
         input_video_path: str = ORIGINAL_VIDEO,
-        merged_video_path: str = TMP_VIDEO,
+        merged_video_path: str = TMP_VIDEO_PATH,
         output_video_path: str = FINAL_VIDEO,
         audio_path: str = AUDIO_PATH,
         audio_format: str = "mp3",
@@ -51,20 +51,6 @@ class AudioHandler:
         print(f"\tБитрейт: {self.BITRATE}")
         print(f"\tЧастота дискретизации: {self.SAMPLE_FREQ} Hz")
         print(f"\tКаналы: {self.CANALS} (стерео)")
-
-    def check_audio_extracted(self, audio_file) -> None:
-        """
-        Проверяет, было ли аудио успешно извлечено из видеофайла.
-        Возвращает True, если аудио существует, иначе False.
-        """
-        if audio_file and os.path.exists(audio_file):
-            print(f"✅ Аудио успешно извлечено: {audio_file}\n")
-            self.audio_path = audio_file
-        else:
-            print("⚠️ Аудио не найдено или не было извлечено.")
-            raise FileNotFoundError(
-                "Аудиофайл не найден. Проверьте, было ли аудио успешно извлечено."
-            )
 
     async def extract_audio(self) -> Optional[str]:
         """
@@ -86,7 +72,7 @@ class AudioHandler:
                 "-ac", self.CANALS,
                 "-b:a", self.BITRATE,
                 "-progress", "-",
-                "-threads", str(ALLOWED_THREADS),
+                "-threads", str(ALLOWED_CPU_THREADS),
                 "-loglevel", "error",
                 audio_file,
             ]
@@ -97,7 +83,8 @@ class AudioHandler:
             except subprocess.CalledProcessError as e:
                 print(f"🚨 Ошибка при извлечении аудио: {e}")
                 return None
-            self.check_audio_extracted(audio_file)
+            self.__check_audio_extracted(audio_file)
+            return None
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, __sync_extract)
@@ -119,7 +106,7 @@ class AudioHandler:
             print(f"\tКодек аудио: исходный ({self.audio_format})")
             print(f"\tДлительность видео: {duration:.2f} сек")
             print(f"\tFPS видео: {fps}")
-            print(f"\tПотоков: {ALLOWED_THREADS}")
+            print(f"\tПотоков: {ALLOWED_CPU_THREADS}")
             print(f"\tРазрешение: {self.resolution}")
 
             cmd = [
@@ -130,7 +117,7 @@ class AudioHandler:
                 "-map", "0:v:0",
                 "-map", "1:a:0",
                 "-shortest", "-progress", "-",
-                "-threads", str(ALLOWED_THREADS),
+                "-threads", str(ALLOWED_CPU_THREADS),
                 "-nostats", "-loglevel", "error",
                 self.out_video_path,
             ]
@@ -146,6 +133,20 @@ class AudioHandler:
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, __sync_insert)
+
+    def __check_audio_extracted(self, audio_file) -> None:
+        """
+        Проверяет, было ли аудио успешно извлечено из видеофайла.
+        Возвращает True, если аудио существует, иначе False.
+        """
+        if audio_file and os.path.exists(audio_file):
+            print(f"✅ Аудио успешно извлечено: {audio_file}\n")
+            self.audio_path = audio_file
+        else:
+            print("⚠️ Аудио не найдено или не было извлечено.")
+            raise FileNotFoundError(
+                "Аудиофайл не найден. Проверьте, было ли аудио успешно извлечено."
+            )
 
     def __str__(self):
         return (
