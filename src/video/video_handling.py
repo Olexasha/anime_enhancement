@@ -1,12 +1,14 @@
 import asyncio
 import glob
 import os
+import time
 
 import cv2
 
-from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO
+from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO_PATH
 from src.utils.file_utils import delete_file
-from src.video.video_helpers import FIFOPriorityQueue
+from src.video.video_exceptions import VideoDoesNotExist, VideoMergingError, VideoReadFrameError
+from src.video.video_helpers import FIFOPriorityQueue, sort_video_paths
 
 
 class VideoHandler:
@@ -19,26 +21,47 @@ class VideoHandler:
         self.fps = fps
         self.video_queue = FIFOPriorityQueue()
 
-    @staticmethod
-    def _build_video_path(video_name: str, path=BATCH_VIDEO_PATH):
-        """Генерирует путь к видео с заданным именем."""
-        return os.path.join(path, f"{video_name}.mp4")
+    async def build_short_video(self, frame_batches: list) -> str:
+        """
+        Собирает обработанные фреймы из батчей в одно короткое видео.
+        :param frame_batches: Список имен батчей, из которых нужно собрать фреймы.
+        :return: Путь к созданному видеофайлу.
+        """
+        print(f"\n🔄 Начинаем обработку {len(frame_batches)} батчей фреймов...")
+        batch_range_start = frame_batches[0].split("_")[1]
+        batch_range_end = frame_batches[-1].split("_")[1]
+        frame_paths = self.__collect_frames(frame_batches)
+        video_path = await self._generate_video_from_frames(
+            frame_paths, batch_range_start, batch_range_end
+        )
+        self.video_queue.put((0, video_path))
+        print(f"📥 Видео добавлено в очередь: {video_path}")
+        return video_path
 
-    @staticmethod
-    def _collect_frames(batches_list: list) -> list:
+    def build_final_video(self) -> str | None:
         """
-        Собирает пути фреймов из указанных батчей.
-        :param batches_list: Список имен батчей, из которых нужно собрать фреймы.
-        :return: Список абсолютных путей к фреймам.
+        Собирает все видео из очереди в одно финальное видео.
+        :return: Путь к созданному видеофайлу или None, если очередь пуста.
         """
-        frame_paths = list()
-        for batch in batches_list:
-            batch_path = str(os.path.join(OUTPUT_BATCHES_DIR, batch))
-            frame_paths.extend(
-                sorted(glob.glob(os.path.join(batch_path, "frame*.jpg")))
-            )
-            print(f"📂 Собрано {len(frame_paths)} фреймов из {len(batches_list)} батчей")
-        return frame_paths
+        print("\n🏁 Начинаем финальную сборку видео...")
+
+        video_paths = []
+        print(f"\n🔀 Начинаем слияние {len(video_paths)} видео:")
+        for i in range(self.video_queue.qsize()):
+            video_path = self.video_queue.get()[1]
+            if not os.path.isfile(video_path):
+                raise VideoDoesNotExist(video_path)
+            video_paths.append(video_path)
+            print(f"  {i + 1}. {os.path.basename(video_path)}")
+        video_paths = sort_video_paths(video_paths)
+
+        if not video_paths:
+            raise ValueError("Список видео не может быть пустым")
+
+        output_video = self._handle_merging(video_paths)
+        for video_path in video_paths:
+            delete_file(video_path)
+        return output_video
 
     async def _generate_video_from_frames(
         self, frame_paths: list, batch_range_start: str, batch_range_end: str
@@ -52,7 +75,7 @@ class VideoHandler:
         """
 
         def __generate():
-            video_path = self._build_video_path(
+            video_path = self.__build_video_path(
                 f"short_{batch_range_start}-{batch_range_end}"
             )
             print(f"🎥 Начинаем создание видео из {len(frame_paths)} фреймов...")
@@ -60,9 +83,7 @@ class VideoHandler:
             # Получаем размер первого кадра для инициализации VideoWriter
             first_frame = cv2.imread(frame_paths[0])
             if first_frame is None:
-                raise ValueError(
-                    f"🚨 Не удалось прочитать первый кадр: {frame_paths[0]}"
-                )
+                raise VideoReadFrameError(frame_paths[0])
             height, width, _ = first_frame.shape
 
             # Инициализируем VideoWriter
@@ -79,7 +100,7 @@ class VideoHandler:
 
                     # Выводим прогресс каждые 300 кадров
                     frame_num = i + 1
-                    if frame_num % 300 == 0 or frame_num == total_frames:
+                    if frame_num % 500 == 0 or frame_num == total_frames:
                         print(f"📹 Обработано кадров: {i + 1}/{total_frames}")
             finally:
                 out.release()
@@ -90,107 +111,116 @@ class VideoHandler:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, __generate)
 
-    async def process_frames_to_video(self, frame_batches: list) -> str:
+    def _handle_merging(self, video_paths: list) -> str:
         """
-        Собирает обработанные фреймы из батчей в одно короткое видео.
-        :param frame_batches: Список имен батчей, из которых нужно собрать фреймы.
+        Обрабатывает объединение видео из списка путей к видеофайлам.
+        :param video_paths: Список путей к видеофайлам для объединения.
         :return: Путь к созданному видеофайлу.
         """
-        print(f"\n🔄 Начинаем обработку {len(frame_batches)} батчей фреймов...")
-        batch_range_start = frame_batches[0].split("_")[1]
-        batch_range_end = frame_batches[-1].split("_")[1]
-        frame_paths = self._collect_frames(frame_batches)
-        video_path = await self._generate_video_from_frames(
-            frame_paths, batch_range_start, batch_range_end
+        cap = cv2.VideoCapture(video_paths[0])
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        first_num = video_paths[0].split("_")[-1].split(".")[0].split("-")[0]
+        last_num = video_paths[-1].split("_")[-1].split(".")[0].split("-")[-1]
+        output_path = self.__build_video_path(
+            f"merged_{first_num}-{last_num}", TMP_VIDEO_PATH
         )
-        self.video_queue.put((0, video_path))
-        print(f"📥 Видео добавлено в очередь: {video_path}")
-        return video_path
 
-    def _merge_two_videos(self, first_video: str, second_video: str) -> str:
-        """
-        Объединяет два видео в одно с помощью OpenCV.
-        :param first_video: Путь к первому видеофайлу.
-        :param second_video: Путь ко второму видеофайлу.
-        :return: Путь к объединенному видеофайлу.
-        """
-        print(f"\n🔀 Начинаем слияние видео:\n1. {first_video}\n2. {second_video}")
-        if not os.path.isfile(first_video):
-            raise FileNotFoundError(f"🚨 Видео не найдено: {first_video}")
-        if not os.path.isfile(second_video):
-            raise FileNotFoundError(f"🚨 Видео не найдено: {second_video}")
-
-        # Создаем объекты VideoCapture для обоих видео
-        cap1 = cv2.VideoCapture(first_video)
-        cap2 = cv2.VideoCapture(second_video)
-
-        # Проверяем параметры первого видео (они будут использованы для выходного файла)
-        width = int(cap1.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap1.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-        # Создаем имя для объединенного видео
-        video_1 = (
-            os.path.basename(first_video).split(".")[0].split("_")[-1].split("-")[0]
-        )
-        video_2 = (
-            os.path.basename(second_video).split(".")[0].split("_")[-1].split("-")[-1]
-        )
-        merged_video_path = self._build_video_path(f"merged_{video_1}-{video_2}")
-
-        # Инициализируем VideoWriter
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(merged_video_path, fourcc, self.fps, (width, height))
-
+        out = cv2.VideoWriter(
+            filename=output_path,
+            apiPreference=cv2.CAP_FFMPEG,
+            fourcc=fourcc,
+            fps=self.fps,
+            frameSize=(width, height),
+        )
         try:
-            print("⏳ Обрабатываем первое видео...")
-            while cap1.isOpened():
-                ret, frame = cap1.read()
-                if not ret:
-                    break
-                out.write(frame)
-            print("⏳ Обрабатываем второе видео...")
-            while cap2.isOpened():
-                ret, frame = cap2.read()
-                if not ret:
-                    break
-                out.write(frame)
-            print(f"✅ Видео успешно объединены: {merged_video_path}")
+            total_frames = sum(
+                int(cv2.VideoCapture(p).get(cv2.CAP_PROP_FRAME_COUNT))
+                for p in video_paths
+            )
+            start_time = time.time()
+            self.__merge_videos(video_paths, out, total_frames, start_time)
+            total_time = time.time() - start_time
+            print(
+                f"\n✅ Успешно объединено {len(video_paths)} видео "
+                f"за {total_time:.1f} сек ({total_frames / total_time:.1f} FPS)"
+            )
+            print(f"📁 Результат: {os.path.basename(output_path)}")
+        except VideoMergingError as e:
+            print("🚨 Ошибка при объединении видео:")
+            raise VideoMergingError(f"Ошибка при объединении видео: {e}")
         finally:
-            cap1.release()
-            cap2.release()
             out.release()
 
-        # Удаляем исходные видеофайлы
-        delete_file(first_video)
-        delete_file(second_video)
-        print(f"🗑️ Исходные видеофайлы удалены")
-        return merged_video_path
+        return output_path
 
-    def build_final_video(self) -> str | None:
-        """Выполняет попарное объединение видео из основной очереди."""
-        print("\n🏁 Начинаем финальную сборку видео...")
-        print(f"📊 Видео в очереди: {self.video_queue.qsize()}")
+    @staticmethod
+    def __merge_videos(
+        video_paths: list,
+        out: cv2.VideoWriter,
+        total_frames: int,
+        start_time: float,
+    ) -> None:
+        """
+        Объединяет видео из списка путей к видеофайлам в один выходной файл.
+        :param video_paths: Список путей к видеофайлам для объединения.
+        :param out: Объект VideoWriter для записи выходного видео.
+        :param total_frames: Общее количество кадров для отслеживания прогресса.
+        :param start_time: Время начала обработки для расчета FPS и оставшегося времени.
+        """
+        processed_frames = 0
+        for video_idx, video_path in enumerate(video_paths, 1):
+            cap = cv2.VideoCapture(video_path)
+            video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        while self.video_queue.qsize() >= 2:
-            priority1, video1 = self.video_queue.get()
-            priority2, video2 = self.video_queue.get()
-            if priority1 < priority2:
-                self.video_queue.put((priority1 + 1, video1))
-                priority1, video1 = priority2, video2
-                priority2, video2 = self.video_queue.get()
-            print(f"\n🔧 Объединяем видео с приоритетами {priority1} и {priority2}")
-            merged_video = self._merge_two_videos(video1, video2)
-            new_priority = max(priority1, priority2) + 1
-            self.video_queue.put((new_priority, merged_video))
             print(
-                f"Объединенное видео добавлено в очередь с приоритетом {new_priority}"
+                f"\n📹 Обрабатываем видео {video_idx}/{len(video_paths)} "
+                f"({video_frames} кадров): {os.path.basename(video_path)}"
             )
 
-        if self.video_queue.qsize() == 1:
-            _, final_merge = self.video_queue.get()
-            os.rename(final_merge, TMP_VIDEO)
-            print(f"\n🎉 Финальное видео успешно создано: {TMP_VIDEO}")
-            return TMP_VIDEO
+            for frame_idx in range(video_frames):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                out.write(frame)
+                processed_frames += 1
 
-        print("🤷 Нет видео для объединения")
-        return None
+                # Обновляем прогресс каждые 500 кадров
+                if processed_frames % 500 == 0:
+                    elapsed = time.time() - start_time
+                    fps = processed_frames / elapsed if elapsed > 0 else 0
+                    remaining = (
+                        (total_frames - processed_frames) / fps if fps > 0 else 0
+                    )
+                    print(
+                        f"\rПрогресс: {processed_frames}/{total_frames} "
+                        f"({processed_frames / total_frames:.1%}) | "
+                        f"FPS: {fps:.1f} | Осталось: {remaining:.1f}s",
+                        end="",
+                        flush=True,
+                    )
+            cap.release()
+
+    @staticmethod
+    def __build_video_path(video_name: str, path=BATCH_VIDEO_PATH):
+        """Генерирует путь к видео с заданным именем."""
+        return os.path.join(path, f"{video_name}.mp4")
+
+    @staticmethod
+    def __collect_frames(batches_list: list) -> list:
+        """
+        Собирает пути фреймов из указанных батчей.
+        :param batches_list: Список имен батчей, из которых нужно собрать фреймы.
+        :return: Список абсолютных путей к фреймам.
+        """
+        frame_paths = list()
+        for batch in batches_list:
+            batch_path = str(os.path.join(OUTPUT_BATCHES_DIR, batch))
+            frame_paths.extend(
+                sorted(glob.glob(os.path.join(batch_path, "frame*.jpg")))
+            )
+            print(f"📂 Собрано {len(frame_paths)} фреймов из {len(batches_list)} батчей")
+        return frame_paths
