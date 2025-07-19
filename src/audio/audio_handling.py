@@ -1,13 +1,10 @@
 import asyncio
 import os
 import subprocess
+from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 
-from src.audio.audio_helpers import (
-    delete_audio_if_exists,
-    get_audio_full_path,
-    run_ffmpeg_command_with_progress,
-)
+from src.audio.audio_helpers import run_ffmpeg_command_with_progress
 from src.config.settings import (
     ALLOWED_CPU_THREADS,
     AUDIO_PATH,
@@ -16,7 +13,7 @@ from src.config.settings import (
     RESOLUTION,
     TMP_VIDEO_PATH,
 )
-from src.utils.file_utils import delete_file
+from src.files.file_actions import delete_file
 from src.video.video_helpers import get_video_duration
 
 
@@ -52,87 +49,97 @@ class AudioHandler:
         print(f"\tЧастота дискретизации: {self.SAMPLE_FREQ} Hz")
         print(f"\tКаналы: {self.CANALS} (стерео)")
 
-    async def extract_audio(self) -> Optional[str]:
+    def extract_audio_sync(self) -> Optional[str]:
         """
         Извлекает аудио из видеофайла и сохраняет его как отдельный аудиофайл.
         """
-        audio_file = get_audio_full_path(
-            self.in_video_path, self.audio_path, self.audio_format
-        )
-        delete_audio_if_exists(audio_file)
+        audio_file = self.get_audio_full_path()
         print(f"\n🎵 Извлечение аудио из: {self.in_video_path}")
         print(f"Сохранение в: {audio_file}")
-        duration = get_video_duration(self.in_video_path)
 
-        def __sync_extract():
-            cmd = [
-                "ffmpeg", "-y", "-i", self.in_video_path,
-                "-vn", "-acodec", self.codec,
-                "-ar", self.SAMPLE_FREQ,
-                "-ac", self.CANALS,
-                "-b:a", self.BITRATE,
-                "-progress", "-",
-                "-threads", str(ALLOWED_CPU_THREADS),
-                "-loglevel", "error",
-                audio_file,
-            ]
-            try:
-                run_ffmpeg_command_with_progress(
-                    cmd, duration, desc="Извлечение аудио", unit="сек"
-                )
-            except subprocess.CalledProcessError as e:
-                print(f"🚨 Ошибка при извлечении аудио: {e}")
-                return None
-            self.__check_audio_extracted(audio_file)
-            return None
+        ffmpeg_args = [
+            "-y", "-i", self.in_video_path,
+            "-vn", "-acodec", self.codec,
+            "-ar", self.SAMPLE_FREQ, "-ac", self.CANALS,
+            "-b:a", self.BITRATE, "-threads", str(ALLOWED_CPU_THREADS),
+            "-loglevel", "error", audio_file,
+        ]
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, __sync_extract)
+        result = subprocess.run(
+            ["ffmpeg", *ffmpeg_args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
 
-    async def insert_audio(self) -> None:
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Ошибка извлечения аудио (FFmpeg): {result.stderr.decode()}"
+            )
+        self.__check_audio_extracted(audio_file)
+        self.audio_path = audio_file
+
+    async def extract_audio(self) -> Optional[str]:
+        loop = asyncio.get_running_loop()
+        with ProcessPoolExecutor() as pool:
+            return await loop.run_in_executor(pool, self.extract_audio_sync)
+
+    def insert_audio(self) -> None:
         """
         Добавляет аудиофайл в видео, сохраняя оригинальное качество видео и аудио, с учетом разрешения видео.
         """
-        print(f"\n🎬 Начинаем добавление аудио к видео...")
-        print(f"Видео: {self.tmp_video_path}")
-        print(f"Аудио: {self.audio_path}")
-        print(f"Выходной файл: {self.out_video_path}")
+        duration, fps = get_video_duration(self.tmp_video_path, return_fps_too=True)
+        audio_file = self.get_audio_full_path()
+        print(f"\n⚙️ Параметры обработки:")
+        print(f"\tКодек видео: исходный (копирование)")
+        print(f"\tКодек аудио: исходный ({self.audio_format})")
+        print(f"\tДлительность видео: {duration:.2f} сек")
+        print(f"\tFPS видео: {fps}")
+        print(f"\tПотоков: {ALLOWED_CPU_THREADS}")
+        print(f"\tРазрешение: {self.resolution}")
 
-        def __sync_insert():
-            duration, fps = get_video_duration(self.tmp_video_path, return_fps_too=True)
+        cmd = [
+            "ffmpeg", "-y", "-i", self.tmp_video_path,
+            "-i", audio_file,
+            "-c:v", "copy",
+            "-c:a", "copy",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-shortest", "-progress", "-",
+            "-threads", str(ALLOWED_CPU_THREADS),
+            "-nostats", "-loglevel", "error",
+            self.out_video_path,
+        ]
+        try:
+            run_ffmpeg_command_with_progress(
+                cmd, duration, desc="Добавление аудио к видео", unit="сек"
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"🚨 Ошибка при добавлении аудио: {e}")
+            raise
+        delete_file(audio_file)
+        delete_file(self.tmp_video_path)
 
-            print(f"\n⚙️ Параметры обработки:")
-            print(f"\tКодек видео: исходный (копирование)")
-            print(f"\tКодек аудио: исходный ({self.audio_format})")
-            print(f"\tДлительность видео: {duration:.2f} сек")
-            print(f"\tFPS видео: {fps}")
-            print(f"\tПотоков: {ALLOWED_CPU_THREADS}")
-            print(f"\tРазрешение: {self.resolution}")
+    def get_audio_full_path(self) -> str:
+        """
+        Возвращает полный путь к аудиофайлу, который будет извлечен из видеофайла.
+        """
+        filename = os.path.splitext(os.path.basename(self.in_video_path))[0]
+        return os.path.join(self.audio_path, f"{filename}.{self.audio_format}")
 
-            cmd = [
-                "ffmpeg", "-y", "-i", self.tmp_video_path,
-                "-i", self.audio_path,
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-shortest", "-progress", "-",
-                "-threads", str(ALLOWED_CPU_THREADS),
-                "-nostats", "-loglevel", "error",
-                self.out_video_path,
-            ]
-            try:
-                run_ffmpeg_command_with_progress(
-                    cmd, duration, desc="Добавление аудио к видео", unit="сек"
-                )
-            except subprocess.CalledProcessError as e:
-                print(f"🚨 Ошибка при добавлении аудио: {e}")
-                raise
-            delete_file(self.audio_path)
-            delete_file(self.tmp_video_path)
+    def delete_audio_if_exists(self, audio_path: str = None) -> None:
+        """
+        Удаляет аудиофайл, если он существует.
 
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, __sync_insert)
+        :param audio_path: Путь к аудиофайлу.
+        """
+        if audio_path is None:
+            audio_path = self.get_audio_full_path()
+        if os.path.exists(audio_path):
+            delete_file(audio_path)
+            print(f"\n🗑️ Аудиофайл {audio_path} успешно удален.\n")
+        else:
+            print(f"\nАудиофайл {audio_path} не найден, удаление не требуется.\n")
 
     def __check_audio_extracted(self, audio_file) -> None:
         """
@@ -140,10 +147,10 @@ class AudioHandler:
         Возвращает True, если аудио существует, иначе False.
         """
         if audio_file and os.path.exists(audio_file):
-            print(f"✅ Аудио успешно извлечено: {audio_file}\n")
+            print(f"\n\n✅ Аудио успешно извлечено: {audio_file}\n")
             self.audio_path = audio_file
         else:
-            print("⚠️ Аудио не найдено или не было извлечено.")
+            print("\n\n⚠️ Аудио не найдено или не было извлечено.\n")
             raise FileNotFoundError(
                 "Аудиофайл не найден. Проверьте, было ли аудио успешно извлечено."
             )

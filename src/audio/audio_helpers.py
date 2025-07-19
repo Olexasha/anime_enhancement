@@ -4,34 +4,6 @@ import subprocess
 from colorama import Fore, Style
 from tqdm import tqdm
 
-from src.utils.file_utils import delete_file
-
-
-def get_audio_full_path(video_path: str, audio_dir: str, extension: str = "aac") -> str:
-    """
-    Возвращает полный путь к аудиофайлу, который будет извлечен из видеофайла.
-
-    :param video_path: Путь к исходному видеофайлу.
-    :param audio_dir: Директория, куда будет сохранен аудиофайл.
-    :param extension: Расширение для аудиофайла. По умолчанию 'aac'.
-    :return: Полный путь к аудиофайлу с указанным расширением.
-    """
-    filename = os.path.splitext(os.path.basename(video_path))[0]
-    return os.path.join(audio_dir, f"{filename}.{extension}")
-
-
-def delete_audio_if_exists(audio_path: str) -> None:
-    """
-    Удаляет аудиофайл, если он существует.
-
-    :param audio_path: Путь к аудиофайлу.
-    """
-    if os.path.exists(audio_path):
-        delete_file(audio_path)
-        print(f"🗑️ Аудиофайл {audio_path} успешно удален.")
-    else:
-        print(f"Аудиофайл {audio_path} не найден, удаление не требуется.")
-
 
 def run_ffmpeg_command_with_progress(
     cmd: list, duration: float, desc: str = "Обработка", unit: str = "сек"
