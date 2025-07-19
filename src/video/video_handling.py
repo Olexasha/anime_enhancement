@@ -6,8 +6,12 @@ import time
 import cv2
 
 from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO_PATH
-from src.utils.file_utils import delete_file
-from src.video.video_exceptions import VideoDoesNotExist, VideoMergingError, VideoReadFrameError
+from src.files.file_actions import delete_file
+from src.video.video_exceptions import (
+    VideoDoesNotExist,
+    VideoMergingError,
+    VideoReadFrameError,
+)
 from src.video.video_helpers import FIFOPriorityQueue, sort_video_paths
 
 

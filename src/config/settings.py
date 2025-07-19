@@ -6,7 +6,7 @@ load_dotenv()
 ROOT_DIR = os.getcwd()
 
 # Пути к файлам
-ORIGINAL_VIDEO = os.path.join(ROOT_DIR, "data", "input_video", "naruto_test.mp4")
+ORIGINAL_VIDEO = os.path.join(ROOT_DIR, "data", "input_video", "naruto_test2.mkv")
 AUDIO_PATH = os.path.join(ROOT_DIR, "data", "audio")
 TMP_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "tmp_video")
 FINAL_VIDEO = os.path.join(ROOT_DIR, "data", "output_video", "final_video.mp4")
@@ -20,7 +20,7 @@ START_BATCH_TO_UPSCALE = int(os.getenv("START_BATCH_TO_UPSCALE", 1))
 END_BATCH_TO_UPSCALE = int(os.getenv("END_BATCH_TO_UPSCALE", 0))
 STEP_PER_BATCH = int(os.getenv("STEP_PER_BATCH", 6))
 FRAMES_PER_BATCH = int(os.getenv("FRAMES_PER_BATCH", 1000))
-ALLOWED_CPU_THREADS = int(os.getenv("ALLOWED_THREADS", 6))
+ALLOWED_CPU_THREADS = int(os.getenv("ALLOWED_CPU_THREADS", 6))
 ALLowed_GPU_THREADS = int(os.getenv("ALLOWED_GPU_THREADS", 1))
 
 # Настройка апскейла

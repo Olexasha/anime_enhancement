@@ -28,13 +28,18 @@ async def main():
     """Основной процесс обработки видео."""
     start_time = datetime.now()
     print_header("запуск обработки видео")
-
-    fps = await asyncio.to_thread(get_fps_accurate, ORIGINAL_VIDEO)
     audio = AudioHandler()
-    video = VideoHandler(fps=fps)
+    await asyncio.gather(
+        asyncio.to_thread(audio.delete_audio_if_exists),
+        asyncio.to_thread(delete_frames, del_upscaled=False),
+        asyncio.to_thread(delete_frames, del_upscaled=True),
+    )
 
-    await asyncio.create_task(audio.extract_audio())
+    # запускаем извлечение аудио из видео в фоне
+    asyncio.create_task(audio.extract_audio())
     await asyncio.to_thread(extract_frames_to_batches)
+    fps = await asyncio.to_thread(get_fps_accurate, ORIGINAL_VIDEO)
+    video = VideoHandler(fps=fps)
 
     # Определяем диапазон батчей для обработки
     start_batch = START_BATCH_TO_UPSCALE
@@ -70,20 +75,20 @@ async def main():
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
         short_video = await video.build_short_video(batches_to_perform)
         if short_video:
-            await asyncio.to_thread(delete_frames, del_upscaled=False)
             await asyncio.to_thread(delete_frames, del_upscaled=True)
             print(f"🎥 Видео собрано: {short_video}")
             print(f"🗑️ Обработанные кадры удалены из батчей {start_batch}-{end_batch}")
 
         start_batch += STEP_PER_BATCH
 
+    await asyncio.to_thread(delete_frames, del_upscaled=False)
     print_header("финальная сборка видео")
     # Сборка финального видео из временных видео
     final_merge = video.build_final_video()
 
     print("\n🔊 Добавляем аудиодорожку к финальному видео...")
     audio.tmp_video_path = final_merge
-    await audio.insert_audio()
+    await asyncio.to_thread(audio.insert_audio)
     print(f"✅ Аудио добавлено к {FINAL_VIDEO}")
 
     print_header("обработка завершена")

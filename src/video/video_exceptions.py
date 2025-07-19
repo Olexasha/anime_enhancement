@@ -12,6 +12,4 @@ class VideoMergingError(Exception):
 
 class VideoReadFrameError(Exception):
     def __init__(self, video_path: str):
-        super().__init__(
-            f"Не удалось прочитать кадр {1} из видео '{video_path}'."
-        )
+        super().__init__(f"Не удалось прочитать кадр {1} из видео '{video_path}'.")

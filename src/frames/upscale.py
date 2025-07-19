@@ -19,8 +19,8 @@ from src.config.settings import (
     REALESRGAN_SCRIPT,
     UPSCALE_FACTOR,
 )
+from src.files.file_actions import create_dir, delete_dir, delete_object
 from src.frames.frames_helpers import count_frames_in_certain_batches
-from src.utils.file_utils import create_dir, delete_dir, delete_object
 
 
 def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
@@ -96,7 +96,6 @@ def _upscale(batch_num: int):
     ]
 
     result = subprocess.run(command, capture_output=True, text=True)
-
     if result.returncode != 0:
         print(f"Ошибка в батче {batch_num}: {result.stderr}")
 
@@ -117,13 +116,11 @@ async def upscale_batches(start_batch: int, end_batch: int):
     try:
         # Запускаем обработку батчей с использованием ProcessPoolExecutor
         loop = asyncio.get_event_loop()
-
         with ProcessPoolExecutor(max_workers=ALLOWED_CPU_THREADS) as executor:
             tasks = [
                 loop.run_in_executor(executor, _upscale, batch_num)
                 for batch_num in batches_range
             ]
-
             # Ожидаем завершения всех задач апскейлинга
             await asyncio.gather(*tasks)
 
