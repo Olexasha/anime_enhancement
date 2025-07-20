@@ -6,7 +6,6 @@ from typing import Optional
 
 from src.audio.audio_helpers import run_ffmpeg_command_with_progress
 from src.config.settings import (
-    ALLOWED_CPU_THREADS,
     AUDIO_PATH,
     FINAL_VIDEO,
     ORIGINAL_VIDEO,
@@ -28,6 +27,7 @@ class AudioHandler:
 
     def __init__(
         self,
+        threads: int,
         input_video_path: str = ORIGINAL_VIDEO,
         merged_video_path: str = TMP_VIDEO_PATH,
         output_video_path: str = FINAL_VIDEO,
@@ -35,6 +35,7 @@ class AudioHandler:
         audio_format: str = "mp3",
         resolution: str = RESOLUTION,
     ):
+        self.threads = threads
         self.in_video_path = input_video_path
         self.tmp_video_path = merged_video_path
         self.out_video_path = output_video_path
@@ -61,7 +62,7 @@ class AudioHandler:
             "-y", "-i", self.in_video_path,
             "-vn", "-acodec", self.codec,
             "-ar", self.SAMPLE_FREQ, "-ac", self.CANALS,
-            "-b:a", self.BITRATE, "-threads", str(ALLOWED_CPU_THREADS),
+            "-b:a", self.BITRATE, "-threads", str(self.threads),
             "-loglevel", "error", audio_file,
         ]
 
@@ -95,7 +96,7 @@ class AudioHandler:
         print(f"\tКодек аудио: исходный ({self.audio_format})")
         print(f"\tДлительность видео: {duration:.2f} сек")
         print(f"\tFPS видео: {fps}")
-        print(f"\tПотоков: {ALLOWED_CPU_THREADS}")
+        print(f"\tПотоков: {self.threads}")
         print(f"\tРазрешение: {self.resolution}")
 
         cmd = [
@@ -106,7 +107,7 @@ class AudioHandler:
             "-map", "0:v:0",
             "-map", "1:a:0",
             "-shortest", "-progress", "-",
-            "-threads", str(ALLOWED_CPU_THREADS),
+            "-threads", str(self.threads),
             "-nostats", "-loglevel", "error",
             self.out_video_path,
         ]
@@ -165,5 +166,4 @@ class AudioHandler:
             f"resolution={self.resolution})"
         )
 
-    def __repr__(self):
-        return self.__str__()
+    __repr__ = __str__

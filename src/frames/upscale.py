@@ -10,13 +10,11 @@ from colorama import Fore, Style
 from tqdm import tqdm
 
 from src.config.settings import (
-    ALLOWED_CPU_THREADS,
     INPUT_BATCHES_DIR,
     MODEL_DIR,
     MODEL_NAME,
     OUTPUT_BATCHES_DIR,
     OUTPUT_IMAGE_FORMAT,
-    REALESRGAN_SCRIPT,
     UPSCALE_FACTOR,
 )
 from src.files.file_actions import create_dir, delete_dir, delete_object
@@ -70,29 +68,32 @@ async def monitor_progress(
             )
             pbar.n = processed_frames
             pbar.refresh()
-            await asyncio.sleep(1)  # Пауза для периодического обновления
+            await asyncio.sleep(5)  # Пауза для периодического обновления
+        pbar.n = processed_frames
+        pbar.refresh()
         pbar.close()
 
 
-def _upscale(batch_num: int):
+def _upscale(ai_threads: str, ai_realesrgan_path: str, batch_num: int):
     """Функция улучшения фреймов в батче."""
     input_dir = Path(INPUT_BATCHES_DIR) / f"batch_{batch_num}"
     output_dir = create_dir(OUTPUT_BATCHES_DIR, f"batch_{batch_num}")
 
-    if not os.path.exists(REALESRGAN_SCRIPT):
+    if not os.path.exists(ai_realesrgan_path):
         print(
-            f"Файл скрипта нейронки для батча {batch_num} не найден: {REALESRGAN_SCRIPT}"
+            f"Файл скрипта нейронки для батча {batch_num} не найден: {ai_realesrgan_path}"
         )
-        raise FileNotFoundError(REALESRGAN_SCRIPT)
+        raise FileNotFoundError(ai_realesrgan_path)
 
     command = [
-        REALESRGAN_SCRIPT,
+        ai_realesrgan_path,
         "-i", str(input_dir),
         "-o", output_dir,
         "-n", MODEL_NAME,
         "-s", str(UPSCALE_FACTOR),
         "-f", OUTPUT_IMAGE_FORMAT,
         "-m", MODEL_DIR,
+        "-j", ai_threads,
     ]
 
     result = subprocess.run(command, capture_output=True, text=True)
@@ -100,7 +101,13 @@ def _upscale(batch_num: int):
         print(f"Ошибка в батче {batch_num}: {result.stderr}")
 
 
-async def upscale_batches(start_batch: int, end_batch: int):
+async def upscale_batches(
+    process_threads: int,
+    ai_threads: str,
+    ai_realesrgan_path: str,
+    start_batch: int,
+    end_batch: int,
+):
     # Считаем общее количество фреймов для отслеживания прогресса
     batches_range = range(start_batch, end_batch + 1)
     frames_in_curr_batches = count_frames_in_certain_batches(
@@ -116,9 +123,11 @@ async def upscale_batches(start_batch: int, end_batch: int):
     try:
         # Запускаем обработку батчей с использованием ProcessPoolExecutor
         loop = asyncio.get_event_loop()
-        with ProcessPoolExecutor(max_workers=ALLOWED_CPU_THREADS) as executor:
+        with ProcessPoolExecutor(max_workers=process_threads) as executor:
             tasks = [
-                loop.run_in_executor(executor, _upscale, batch_num)
+                loop.run_in_executor(
+                    executor, _upscale, ai_threads, ai_realesrgan_path, batch_num
+                )
                 for batch_num in batches_range
             ]
             # Ожидаем завершения всех задач апскейлинга

@@ -18,17 +18,10 @@ OUTPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "upscaled_frame_batches")
 RESOLUTION = os.getenv("RESOLUTION", "4K")
 START_BATCH_TO_UPSCALE = int(os.getenv("START_BATCH_TO_UPSCALE", 1))
 END_BATCH_TO_UPSCALE = int(os.getenv("END_BATCH_TO_UPSCALE", 0))
-STEP_PER_BATCH = int(os.getenv("STEP_PER_BATCH", 6))
 FRAMES_PER_BATCH = int(os.getenv("FRAMES_PER_BATCH", 1000))
-ALLOWED_CPU_THREADS = int(os.getenv("ALLOWED_CPU_THREADS", 6))
-ALLowed_GPU_THREADS = int(os.getenv("ALLOWED_GPU_THREADS", 1))
 
 # Настройка апскейла
 MODEL_DIR = os.path.join(ROOT_DIR, "src", "utils", "realesrgan", "models")
 MODEL_NAME = os.getenv("MODEL_NAME", "realesr-animevideov3")
-_OS = os.getenv("_OS", "linux")
-REALESRGAN_SCRIPT = os.path.join(
-    ROOT_DIR, "src", "utils", "realesrgan", f"realesrgan-{_OS}", f"realesrgan-ncnn-vulkan{".exe" if _OS == 'win' else ""}"
-)
 UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 2))
 OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "jpg")
