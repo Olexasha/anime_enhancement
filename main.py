@@ -4,13 +4,13 @@ import re
 from datetime import datetime
 
 from src.audio.audio_handling import AudioHandler
+from src.config.comp_params import ComputerParams
 from src.config.settings import (
     END_BATCH_TO_UPSCALE,
     FINAL_VIDEO,
     INPUT_BATCHES_DIR,
     ORIGINAL_VIDEO,
     START_BATCH_TO_UPSCALE,
-    STEP_PER_BATCH,
 )
 from src.frames.frames_helpers import extract_frames_to_batches, get_fps_accurate
 from src.frames.upscale import delete_frames, upscale_batches
@@ -24,52 +24,46 @@ def print_header(title: str) -> None:
     print(f"{'=' * 50}")
 
 
-async def main():
-    """Основной процесс обработки видео."""
-    start_time = datetime.now()
-    print_header("запуск обработки видео")
-    audio = AudioHandler()
+async def clean_up(audio: AudioHandler) -> None:
+    """Удаляет временные файлы."""
     await asyncio.gather(
         asyncio.to_thread(audio.delete_audio_if_exists),
         asyncio.to_thread(delete_frames, del_upscaled=False),
         asyncio.to_thread(delete_frames, del_upscaled=True),
     )
 
-    # запускаем извлечение аудио из видео в фоне
-    asyncio.create_task(audio.extract_audio())
-    await asyncio.to_thread(extract_frames_to_batches)
-    fps = await asyncio.to_thread(get_fps_accurate, ORIGINAL_VIDEO)
-    video = VideoHandler(fps=fps)
 
-    # Определяем диапазон батчей для обработки
-    start_batch = START_BATCH_TO_UPSCALE
-    end_batch = 0
+def calculate_batches() -> int:
+    """Вычисляет количество батчей для обработки."""
     if END_BATCH_TO_UPSCALE == 0:
         batch_name_pattern = re.compile(r"batch_(\d+)")
-        end_batch_to_upscale = len(
+        return len(
             [
                 batch
                 for batch in os.listdir(INPUT_BATCHES_DIR)
                 if batch_name_pattern.match(batch)
             ]
         )
-    else:
-        end_batch_to_upscale = END_BATCH_TO_UPSCALE
-    print(f"\nВсего батчей для обработки: {end_batch_to_upscale}")
+    return END_BATCH_TO_UPSCALE
 
-    print(f"🚀 Начинаем обработку с шагом {STEP_PER_BATCH} батчей...")
+
+async def process_batches(
+    threads: int,
+    ai_threads: str,
+    video: VideoHandler,
+    ai_realesrgan_path: str,
+    start_batch: int,
+    end_batch_to_upscale: int,
+) -> None:
+    """Обрабатывает батчи с кадрами."""
+    end_batch = 0
     while end_batch != end_batch_to_upscale:
-        if start_batch + STEP_PER_BATCH <= end_batch_to_upscale:
-            # если шаг STEP_PER_BATCH доступен в диапазоне, то берем его
-            end_batch = start_batch + STEP_PER_BATCH - 1
-        else:
-            # иначе берем все оставшиеся батчи до конца
-            end_batch = end_batch_to_upscale
-
+        end_batch = min(start_batch + threads - 1, end_batch_to_upscale)
         print(f"\n🔄 Обрабатываем батчи с {start_batch} по {end_batch}...")
 
-        # Запуск апскейла батчей с фреймами
-        await upscale_batches(start_batch, end_batch)
+        await upscale_batches(
+            threads, ai_threads, ai_realesrgan_path, start_batch, end_batch
+        )
         print(f"✅ Батчи {start_batch}-{end_batch} успешно апскейлены")
 
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
@@ -79,11 +73,53 @@ async def main():
             print(f"🎥 Видео собрано: {short_video}")
             print(f"🗑️ Обработанные кадры удалены из батчей {start_batch}-{end_batch}")
 
-        start_batch += STEP_PER_BATCH
+        start_batch += threads
+
+
+async def main():
+    """Основной процесс обработки видео."""
+    start_time = datetime.now()
+
+    my_computer = ComputerParams()
+    ai_realesrgan_path = my_computer.ai_realesrgan_path
+    ai_threads, process_threads = my_computer.get_optimal_threads()
+
+    print_header("запуск обработки видео")
+    print(
+        "Компоненты компьютера:",
+        f"\t- ОС: {my_computer.cpu_name}",
+        f"\t- Количество ядер: {my_computer.cpu_threads}",
+        f"\t- Безопасные потоки (используем): {my_computer.safe_cpu_threads}",
+        f"\t- Скорость SSD: ~{my_computer.ssd_speed} MB/s",
+        f"\t- Оперативная память: ~{my_computer.ram_total} GB",
+        f"\t- Параметры нейронок: -j {ai_threads} (загрузка:обработка:сохранение)",
+        f"\t- Путь к нейронке апскейла: {ai_realesrgan_path}",
+        sep="\n",
+    )
+
+    audio = AudioHandler(threads=process_threads)
+    await clean_up(audio)
+
+    # запускаем извлечение аудио из видео в фоне
+    asyncio.create_task(audio.extract_audio())
+    extract_frames_to_batches(process_threads)
+    fps = await asyncio.to_thread(get_fps_accurate, ORIGINAL_VIDEO)
+    video = VideoHandler(fps=fps)
+
+    # Определяем диапазон батчей для обработки
+    end_batch_to_upscale = calculate_batches()
+    print(f"\nВсего батчей для обработки: {end_batch_to_upscale}")
+    await process_batches(
+        process_threads,
+        ai_threads,
+        video,
+        ai_realesrgan_path,
+        START_BATCH_TO_UPSCALE,
+        end_batch_to_upscale,
+    )
 
     await asyncio.to_thread(delete_frames, del_upscaled=False)
     print_header("финальная сборка видео")
-    # Сборка финального видео из временных видео
     final_merge = video.build_final_video()
 
     print("\n🔊 Добавляем аудиодорожку к финальному видео...")

@@ -54,6 +54,7 @@ def sort_video_paths(paths: List[str]) -> List[str]:
     :param paths: Список путей к видеофайлам.
     :return: Отсортированный список путей к видеофайлам.
     """
+
     def __extract_numbers(item: str) -> int:
         path = item
         match = re.search(r"(\d+)-(\d+)\.mp4$", path)

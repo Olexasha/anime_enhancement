@@ -1,14 +1,12 @@
-import glob
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
 from colorama import Fore, Style
 from tqdm import tqdm
 
 from src.config.settings import (
-    ALLOWED_CPU_THREADS,
     FRAMES_PER_BATCH,
     INPUT_BATCHES_DIR,
     ORIGINAL_VIDEO,
@@ -30,6 +28,7 @@ def get_fps_accurate(video_path: str) -> float:
 
     print(f"Файл {video_path} существует и доступен для обработки.")
     fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
     print(f"\tСреднее количество кадров в секунду: {fps}")
     return fps
 
@@ -58,69 +57,72 @@ def form_frame_name(path_to_frame: str, num: int) -> str:
 
 
 def extract_frames_to_batches(
+    threads: int,
     video_path: str = ORIGINAL_VIDEO,
     output_dir: str = INPUT_BATCHES_DIR,
     batch_size: int = FRAMES_PER_BATCH,
 ) -> None:
     """
     Извлекает кадры из видеофайла и сохраняет их по батчам в папках по 1000 кадров.
+    :param threads: Количество потоков для извлечения кадров.
     :param video_path: Путь к исходному видеофайлу.
     :param output_dir: Базовая директория для сохранения батчей с кадрами.
     :param batch_size: Количество кадров в одном батче.
     """
-    video_capture = cv2.VideoCapture(video_path)
-    frame_count = 0
-    increments = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 256)
 
     print("Извлечение кадров из оригинального видеофайла...")
     with tqdm(
-        total=increments,
+        total=total_frames,
         desc=f"{Fore.GREEN}Фреймов извлечено{Style.RESET_ALL}",
         ncols=150,
         colour="green",
         file=sys.stdout,
-    ) as pbar:
-        with ThreadPoolExecutor(max_workers=ALLOWED_CPU_THREADS) as executor:
-            current_batch_dir = make_default_batch_dir(output_dir)
+    ) as pbar, ThreadPoolExecutor(max_workers=threads) as executor:
+        futures = []
+        current_batch_dir = make_default_batch_dir(output_dir)
 
-            while True:
-                ret, frame = video_capture.read()
-                if not ret:
-                    break
+        for frame_num in range(1, total_frames + 1):
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-                # Формируем путь для кадра и добавляем задачу на запись кадра
-                frame_path = form_frame_name(current_batch_dir, frame_count + 1)
+            frame_path = form_frame_name(current_batch_dir, frame_num)
+            futures.append(
                 executor.submit(
                     cv2.imwrite, frame_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100]
                 )
+            )
 
-                frame_count += 1
-                pbar.update(1)  # Обновляем прогресс-бар
+            if frame_num % batch_size == 0:
+                current_batch_dir = make_default_batch_dir(output_dir)
+            if len(futures) >= threads * 2:
+                for future in as_completed(futures[:threads]):
+                    futures.remove(future)
+                pbar.update(threads)
 
-                # Если текущий батч заполнен, создаем новый
-                if frame_count % batch_size == 0:
-                    current_batch_dir = make_default_batch_dir(output_dir)
+        for _ in as_completed(futures):
+            pbar.update(1)
 
-    video_capture.release()
+    cap.release()
     print("Извлечение завершено.")
 
 
 def count_total_frames(directory: str) -> int:
     """Считает общее количество фреймов во всех батчах."""
-    return sum(
-        len(glob.glob(os.path.join(batch, f"*.{OUTPUT_IMAGE_FORMAT}")))
-        for batch in glob.glob(os.path.join(directory, "batch_*"))
-    )
+    return sum(len(files) for _, _, files in os.walk(directory) if files)
 
 
 def count_frames_in_certain_batches(directory: str, batches_num_range: range) -> int:
     """Считает общее количество фреймов в указанных батчах."""
-    frames_in_batches = 0
-
+    count = 0
+    ext = f".{OUTPUT_IMAGE_FORMAT}"
     for batch_num in batches_num_range:
         batch_dir = os.path.join(directory, f"batch_{batch_num}")
-        frames_in_batches += len(
-            glob.glob(os.path.join(batch_dir, f"*.{OUTPUT_IMAGE_FORMAT}"))
-        )
-
-    return frames_in_batches
+        if os.path.exists(batch_dir):
+            count += sum(
+                1 for entry in os.scandir(batch_dir) if entry.name.endswith(ext)
+            )
+    return count
