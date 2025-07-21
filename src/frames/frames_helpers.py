@@ -3,7 +3,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
-from colorama import Fore, Style
 from tqdm import tqdm
 
 from src.config.settings import (
@@ -13,6 +12,7 @@ from src.config.settings import (
     OUTPUT_IMAGE_FORMAT,
 )
 from src.files.batch_utils import make_default_batch_dir
+from src.utils.logger import logger
 
 
 def get_fps_accurate(video_path: str) -> float:
@@ -24,23 +24,14 @@ def get_fps_accurate(video_path: str) -> float:
     # Проверяем, что видео доступно и открывается
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        logger.error(f"Не удалось открыть видео {video_path}")
         raise Exception(f"Не удалось открыть видео {video_path}")
 
-    print(f"Файл {video_path} существует и доступен для обработки.")
+    logger.debug(f"Видео {video_path} доступно для обработки")
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
-    print(f"\tСреднее количество кадров в секунду: {fps}")
+    logger.info(f"Среднее количество кадров в секунду: {fps:.2f}")
     return fps
-
-
-def compare_strings(string: str) -> int:
-    """
-    Сравнивает строку с числом в конце имени файла.
-    :param string: Строка, содержащая имя файла.
-    :return: Число в конце имени файла.
-    """
-    num = int(string.split("_")[-1]) if "_" in string else int(string)
-    return num
 
 
 def form_frame_name(path_to_frame: str, num: int) -> str:
@@ -73,20 +64,23 @@ def extract_frames_to_batches(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 256)
 
-    print("Извлечение кадров из оригинального видеофайла...")
+    logger.info(f"Начало извлечения {total_frames} кадров из видео")
+    logger.debug(f"Параметры: потоки={threads}, batch_size={batch_size}")
+
     with tqdm(
         total=total_frames,
-        desc=f"{Fore.GREEN}Фреймов извлечено{Style.RESET_ALL}",
+        desc="Извлечение фреймов",
         ncols=150,
-        colour="green",
         file=sys.stdout,
     ) as pbar, ThreadPoolExecutor(max_workers=threads) as executor:
         futures = []
         current_batch_dir = make_default_batch_dir(output_dir)
+        logger.debug(f"Создан первый батч: {current_batch_dir}")
 
         for frame_num in range(1, total_frames + 1):
             ret, frame = cap.read()
             if not ret:
+                logger.warning(f"Прервано на кадре {frame_num}")
                 break
 
             frame_path = form_frame_name(current_batch_dir, frame_num)
@@ -98,6 +92,8 @@ def extract_frames_to_batches(
 
             if frame_num % batch_size == 0:
                 current_batch_dir = make_default_batch_dir(output_dir)
+                logger.debug(f"Создан новый батч: {current_batch_dir}")
+
             if len(futures) >= threads * 2:
                 for future in as_completed(futures[:threads]):
                     futures.remove(future)
@@ -107,12 +103,7 @@ def extract_frames_to_batches(
             pbar.update(1)
 
     cap.release()
-    print("Извлечение завершено.")
-
-
-def count_total_frames(directory: str) -> int:
-    """Считает общее количество фреймов во всех батчах."""
-    return sum(len(files) for _, _, files in os.walk(directory) if files)
+    logger.success(f"Успешно извлечено {total_frames} кадров")
 
 
 def count_frames_in_certain_batches(directory: str, batches_num_range: range) -> int:
@@ -125,4 +116,5 @@ def count_frames_in_certain_batches(directory: str, batches_num_range: range) ->
             count += sum(
                 1 for entry in os.scandir(batch_dir) if entry.name.endswith(ext)
             )
+    logger.debug(f"Количество кадров в батчах {batches_num_range}: {count}")
     return count

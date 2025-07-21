@@ -23,9 +23,6 @@ def delete_dir(dir_path: str) -> None:
     dir_path = Path(dir_path)
     if dir_path.exists() and dir_path.is_dir():
         shutil.rmtree(dir_path)
-        print(f"Директория {dir_path} удалена.")
-    else:
-        print(f"Директория {dir_path} не существует.")
 
 
 def delete_file(file_path: str) -> None:
@@ -36,9 +33,6 @@ def delete_file(file_path: str) -> None:
     file_path = Path(file_path)
     if file_path.exists() and file_path.is_file():
         file_path.unlink()
-        print(f"Файл {file_path} удален.")
-    else:
-        print(f"Файл {file_path} не существует.")
 
 
 def delete_object(object_path: str) -> None:
@@ -51,8 +45,6 @@ def delete_object(object_path: str) -> None:
         delete_dir(str(path))
     elif path.is_file() or path.is_symlink():
         delete_file(str(path))
-    else:
-        print(f"Объект {object_path} не существует или имеет неподдерживаемый тип.")
 
 
 def copy_object(
@@ -69,13 +61,9 @@ def copy_object(
     dest = Path(dest_path)
 
     if not src.exists():
-        print(f"Источник {src} не существует.")
         return None
 
     if dest.exists() and not overwrite:
-        print(
-            f"Назначение {dest} уже существует. Используйте 'overwrite=True' для перезаписи."
-        )
         return None
 
     try:
@@ -83,12 +71,9 @@ def copy_object(
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
-            print(f"Директория {src} скопирована в {dest}.")
         elif src.is_file():
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
-            print(f"Файл {src} скопирован в {dest}.")
         return dest
-    except Exception as e:
-        print(f"Ошибка при копировании {src} в {dest}: {e}")
+    except Exception:
         return None
