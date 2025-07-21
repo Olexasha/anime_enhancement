@@ -5,6 +5,8 @@ from typing import Any, List
 
 import cv2
 
+from src.utils.logger import logger
+
 
 class FIFOPriorityQueue(PriorityQueue):
     """Класс очереди с приоритетом, реализующий FIFO (First In, First Out) логику."""
@@ -21,6 +23,7 @@ class FIFOPriorityQueue(PriorityQueue):
     def get(self, block: bool = True, timeout: float | None = None) -> Any:
         """Извлекает элемент с наивысшим приоритетом (FIFO)."""
         if self.empty():
+            logger.error("Очередь пуста, невозможно извлечь элемент.")
             raise IndexError("Очередь пуста")
         item = super().get()
         return item[0], item[2]  # item[0] - приоритет, item[2] - данные
@@ -38,6 +41,7 @@ def get_video_duration(
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
+        logger.error(f"Не удалось открыть видео {video_path}")
         raise Exception(f"Не удалось открыть видео {video_path}")
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)

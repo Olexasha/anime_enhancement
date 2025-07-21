@@ -13,6 +13,7 @@ FINAL_VIDEO = os.path.join(ROOT_DIR, "data", "output_video", "final_video.mp4")
 BATCH_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "video_batches")
 INPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "default_frame_batches")
 OUTPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "upscaled_frame_batches")
+LOGS_DIR = os.path.join(ROOT_DIR)
 
 # Файловые параметры апскейлера
 RESOLUTION = os.getenv("RESOLUTION", "4K")
