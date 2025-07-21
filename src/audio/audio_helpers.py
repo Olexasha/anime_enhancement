@@ -44,8 +44,8 @@ def run_ffmpeg_command_with_progress(
                         or progress_percent >= 100
                     ):
                         logger.info(
-                            f"{desc}: {progress_percent:.1f}% "
-                            f"({current_time:.1f}/{duration:.1f} {unit})"
+                            f"{desc}: {current_time:.1f}/{duration:.1f}{unit} "
+                            f"({progress_percent:.1f}%)"
                         )
                         last_logged_progress = int(progress_percent)
         process.wait()

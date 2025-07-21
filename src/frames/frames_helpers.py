@@ -1,9 +1,7 @@
 import os
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
-from tqdm import tqdm
 
 from src.config.settings import (
     FRAMES_PER_BATCH,
@@ -67,15 +65,13 @@ def extract_frames_to_batches(
     logger.info(f"Начало извлечения {total_frames} кадров из видео")
     logger.debug(f"Параметры: потоки={threads}, batch_size={batch_size}")
 
-    with tqdm(
-        total=total_frames,
-        desc="Извлечение фреймов",
-        ncols=150,
-        file=sys.stdout,
-    ) as pbar, ThreadPoolExecutor(max_workers=threads) as executor:
+    with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = []
         current_batch_dir = make_default_batch_dir(output_dir)
         logger.debug(f"Создан первый батч: {current_batch_dir}")
+
+        processed_frames = 0
+        last_logged_percent = 0
 
         for frame_num in range(1, total_frames + 1):
             ret, frame = cap.read()
@@ -97,10 +93,20 @@ def extract_frames_to_batches(
             if len(futures) >= threads * 2:
                 for future in as_completed(futures[:threads]):
                     futures.remove(future)
-                pbar.update(threads)
+                processed_frames += threads
+
+            current_percent = (processed_frames * 100) // total_frames
+            if current_percent >= last_logged_percent + 5:
+                logger.info(
+                    f"Извлечение фреймов: {processed_frames}/{total_frames} "
+                    f"({current_percent}%)"
+                )
+                last_logged_percent = current_percent
 
         for _ in as_completed(futures):
-            pbar.update(1)
+            processed_frames += 1
+
+        logger.info(f"Извлечение фреймов: {total_frames}/{total_frames} " f"(100%)")
 
     cap.release()
     logger.success(f"Успешно извлечено {total_frames} кадров")

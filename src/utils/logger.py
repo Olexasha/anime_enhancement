@@ -6,7 +6,7 @@ from src.files.file_actions import create_dir
 
 class LogColors:
     GREY = "\x1b[38;20m"
-    WHITE = "\x1b[37;20m"
+    WHITE = "\x1b[97m"
     YELLOW = "\x1b[33;20m"
     RED = "\x1b[31;20m"
     BOLD_RED = "\x1b[31;1m"
@@ -15,7 +15,7 @@ class LogColors:
     RESET = "\x1b[0m"
 
 
-class ColoredFormatter(logging.Formatter):
+class CustomFormatter(logging.Formatter):
     """Кастомный форматтер с цветами для разных уровней логгирования"""
 
     SUCCESS_LEVEL = 25
@@ -60,8 +60,8 @@ class Logger:
         """Добавляем метод success к логгеру"""
 
         def success(self, msg, *args, **kwargs):
-            if self.isEnabledFor(ColoredFormatter.SUCCESS_LEVEL):
-                self._log(ColoredFormatter.SUCCESS_LEVEL, msg, args, **kwargs)
+            if self.isEnabledFor(CustomFormatter.SUCCESS_LEVEL):
+                self._log(CustomFormatter.SUCCESS_LEVEL, msg, args, **kwargs)
 
         logging.Logger.success = success
 
@@ -74,7 +74,7 @@ class Logger:
         """Настройка цветного вывода в консоль"""
         ch = logging.StreamHandler()
         ch.setLevel(self.level)
-        ch.setFormatter(ColoredFormatter())
+        ch.setFormatter(CustomFormatter())
         self.logger.addHandler(ch)
 
     def _setup_file_handler(self, log_file: str):

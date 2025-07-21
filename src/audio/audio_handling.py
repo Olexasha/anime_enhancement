@@ -68,7 +68,6 @@ class AudioHandler:
             "-b:a", self.BITRATE, "-threads", str(self.threads),
             "-loglevel", "error", audio_file,
         ]
-
         try:
             result = subprocess.run(
                 ["ffmpeg", *ffmpeg_args],
@@ -82,6 +81,7 @@ class AudioHandler:
                 )
             self.__check_audio_extracted(audio_file)
             self.audio_path = audio_file
+            logger.success(f"Аудио успешно извлечено {audio_file}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка извлечения аудио: {e.stderr.decode()}")
             raise RuntimeError(f"Ошибка извлечения аудио: {e.stderr.decode()}")
@@ -124,7 +124,7 @@ class AudioHandler:
         ]
         try:
             run_ffmpeg_command_with_progress(
-                cmd, duration, desc="Добавление аудио к видео", unit="сек"
+                cmd, duration, desc="Импортирование аудиоряда в видео", unit="сек"
             )
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка при добавлении аудио: {str(e)}")
