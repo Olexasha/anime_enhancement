@@ -1,17 +1,22 @@
 import asyncio
+import glob
 import os
 import re
 from datetime import datetime
+from math import ceil
 
 from src.audio.audio_handling import AudioHandler
 from src.config.comp_params import ComputerParams
 from src.config.settings import (
+    BATCH_VIDEO_PATH,
     END_BATCH_TO_UPSCALE,
     FINAL_VIDEO,
     INPUT_BATCHES_DIR,
     ORIGINAL_VIDEO,
     START_BATCH_TO_UPSCALE,
+    TMP_VIDEO_PATH,
 )
+from src.files.file_actions import delete_file
 from src.frames.frames_helpers import extract_frames_to_batches, get_fps_accurate
 from src.frames.upscale import delete_frames, upscale_batches
 from src.utils.logger import logger
@@ -26,7 +31,7 @@ def print_header(title: str) -> None:
 
 def print_bottom(title: str) -> None:
     logger.info(f"✅ {title.upper()}".center(50))
-    logger.info(f"{'=' * 50}")
+    logger.info(f"{'=' * 50}\n")
 
 
 async def clean_up(audio: AudioHandler) -> None:
@@ -36,6 +41,12 @@ async def clean_up(audio: AudioHandler) -> None:
         asyncio.to_thread(audio.delete_audio_if_exists),
         asyncio.to_thread(delete_frames, del_upscaled=False),
         asyncio.to_thread(delete_frames, del_upscaled=True),
+        asyncio.to_thread(
+            map, delete_file, glob.glob(os.path.join(BATCH_VIDEO_PATH, "*.mp4"))
+        ),
+        asyncio.to_thread(
+            map, delete_file, glob.glob(os.path.join(TMP_VIDEO_PATH, "*.mp4"))
+        ),
     )
     logger.debug("Временные файлы успешно удалены")
 
@@ -80,13 +91,7 @@ async def process_batches(
         logger.success(f"Батчи {start_batch}-{end_batch} успешно апскейлены")
 
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
-        short_video = await video.build_short_video(batches_to_perform)
-        if short_video:
-            logger.info(f"Видео собрано: {short_video}")
-            await asyncio.to_thread(delete_frames, del_upscaled=True)
-            logger.debug(
-                f"Обработанные кадры удалены из батчей {start_batch}-{end_batch}"
-            )
+        video.build_short_video(batches_to_perform)
         start_batch += threads
 
 
@@ -104,21 +109,21 @@ async def main():
         logger.info(
             "Параметры системы:"
             f"\n\tОС: {my_computer.cpu_name}"
-            f"\n\tЯдра: {my_computer.cpu_threads}"
+            f"\n\tCPU потоки: {my_computer.cpu_threads}"
             f"\n\tБезопасные потоки: {my_computer.safe_cpu_threads}"
-            f"\n\tСкорость SSD: {my_computer.ssd_speed} MB/s"
-            f"\n\tRAM: {my_computer.ram_total} GB"
+            f"\n\tСкорость SSD: ~{my_computer.ssd_speed} MB/s"
+            f"\n\tRAM: ~{my_computer.ram_total} GB"
             f"\n\tПараметры нейронок: -j {ai_threads}"
             f"\n\tПуть к нейронке апскейла: {ai_realesrgan_path}"
         )
 
         print_header("извлекаем 'сырьё' из видео...")
-        audio = AudioHandler(threads=process_threads)
+        audio = AudioHandler(threads=my_computer.safe_cpu_threads // 2)
         await clean_up(audio)
 
         # запускаем извлечение аудио из видео в фоне
         asyncio.create_task(audio.extract_audio())
-        extract_frames_to_batches(process_threads)
+        extract_frames_to_batches(my_computer.safe_cpu_threads // 2)
         fps = await asyncio.to_thread(get_fps_accurate, ORIGINAL_VIDEO)
         video = VideoHandler(fps=fps)
         print_bottom("`сырьё` из видео извлечено")
@@ -135,11 +140,11 @@ async def main():
             START_BATCH_TO_UPSCALE,
             end_batch_to_upscale,
         )
-        await asyncio.to_thread(delete_frames, del_upscaled=False)
         print_bottom("апскейленные короткие видео сгенерированы")
 
         print_header("начало финальной сборки видео...")
-        final_merge = video.build_final_video()
+        total_short_videos = ceil(end_batch_to_upscale / process_threads)
+        final_merge = await video.build_final_video(total_short_videos)
         logger.success(f"Общее видео собрано: {final_merge}")
 
         logger.info("Добавление аудиодорожки к финальному видео")

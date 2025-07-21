@@ -9,7 +9,12 @@ ROOT_DIR = os.getcwd()
 ORIGINAL_VIDEO = os.path.join(ROOT_DIR, "data", "input_video", "naruto_test2.mkv")
 AUDIO_PATH = os.path.join(ROOT_DIR, "data", "audio")
 TMP_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "tmp_video")
-FINAL_VIDEO = os.path.join(ROOT_DIR, "data", "output_video", "final_video.mp4")
+FINAL_VIDEO = os.path.join(
+    ROOT_DIR,
+    "data",
+    "output_video",
+    f"{os.path.splitext(os.path.basename(ORIGINAL_VIDEO))[0]}_enhanced.mp4",
+)
 BATCH_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "video_batches")
 INPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "default_frame_batches")
 OUTPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "upscaled_frame_batches")

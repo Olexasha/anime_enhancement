@@ -64,9 +64,9 @@ class ComputerParams:
         Рассчитывает оптимальные параметры для -j load:proc:save и количество процессов/тредов.
         """
         processes = self._calculate_processing_threads()
-        load_threads = self._calculate_load_threads()
+        save_threads = self._calculate_save_threads()
         proc_threads = self._calculate_proc_threads(processes)
-        save_threads = max(1, load_threads - 1)
+        load_threads = max(1, save_threads - 1)
 
         # подбираем load:proc:save
         j_params = f"{load_threads}:{proc_threads}:{save_threads}"
@@ -105,15 +105,15 @@ class ComputerParams:
         finally:
             delete_file(test_file)
 
-    def _calculate_load_threads(self) -> int:
+    def _calculate_save_threads(self) -> int:
         """Потоки для загрузки (зависит от SSD)."""
         if self.ssd_speed >= 2000:  # NVMe
-            return 3
+            return 2
         return 2 if self.ssd_speed >= 500 else 1  # SATA SSD или HDD
 
     def _calculate_proc_threads(self, processes: int) -> int:
         """Потоки для обработки с учётом количества процессов."""
-        safe_threads = max(2, self.safe_cpu_threads // max(1, processes))
+        safe_threads = max(2, self.safe_cpu_threads // max(1, processes) - 1)
         return min(8, safe_threads)  # Не больше 8 даже для мощных CPU
 
     @staticmethod

@@ -2,10 +2,9 @@ import asyncio
 import glob
 import os
 import subprocess
-import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from tqdm import tqdm
 
 from src.config.settings import (
     INPUT_BATCHES_DIR,
@@ -46,32 +45,54 @@ def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
 
 
 async def monitor_progress(
-    total_frames: int,
-    is_processing: list,
-    batch_numbers: range
+    total_frames: int, is_processing: list, batch_numbers: range
 ) -> None:
     """Мониторинг прогресса с частым обновлением и визуализацией"""
     processed_frames = 0
-    with tqdm(
-        total=total_frames,
-        desc="Обработка батчей "
-        f"{batch_numbers[0]}-{batch_numbers[-1]}",
-        unit=f"фрейм",
-        ncols=150,
-        file=sys.stdout,
-    ) as pbar:
-        while is_processing[0]:
-            if processed_frames >= total_frames:
-                break
-            processed_frames = count_frames_in_certain_batches(
-                OUTPUT_BATCHES_DIR, batch_numbers
-            )
-            pbar.n = processed_frames
-            pbar.refresh()
-            await asyncio.sleep(5)  # Пауза для периодического обновления
-        pbar.n = processed_frames
-        pbar.refresh()
-        pbar.close()
+    start_time = time.time()
+
+    last_logged = 0
+    log_every_sec = 15  # логировать каждые N секунд
+
+    while is_processing[0]:
+        current_frames = count_frames_in_certain_batches(
+            OUTPUT_BATCHES_DIR, batch_numbers
+        )
+
+        # Обновляем только если количество изменилось
+        if current_frames > processed_frames:
+            processed_frames = current_frames
+            progress_percent = (processed_frames / total_frames) * 100
+
+            # Логируем регулярно или при значительном прогрессе
+            current_time = time.time()
+            if (
+                current_time - last_logged >= log_every_sec
+                or progress_percent >= 100
+                or processed_frames == total_frames
+            ):
+                elapsed = current_time - start_time
+                fps = processed_frames / elapsed if elapsed > 0 else 0
+                remaining = (total_frames - processed_frames) / fps if fps > 0 else 0
+
+                logger.info(
+                    f"Апскейл фреймов: {processed_frames}/{total_frames} "
+                    f"({progress_percent:.1f}%) | "
+                    f"Прошло: {elapsed:.1f}сек | "
+                    f"Осталось: {remaining:.1f}сек"
+                )
+                last_logged = current_time
+        if processed_frames >= total_frames:
+            break
+        await asyncio.sleep(5)  # Проверяем прогресс каждые 5 секунд
+    total_time = time.time() - start_time
+    logger.info(
+        f"Апскейл фреймов: {total_frames}/{total_frames} "
+        f"(100%) | Прошло: {total_time:.1f}сек"
+    )
+    logger.success(
+        f"Обработка завершена. (Средняя скорость: {total_frames / total_time:.1f} FPS)"
+    )
 
 
 def _upscale(ai_threads: str, ai_realesrgan_path: str, batch_num: int):
@@ -116,7 +137,7 @@ async def upscale_batches(
 
     logger.info(
         f"Начало обработки батчей {start_batch}-{end_batch} "
-        f"(всего фреймов: {total_frames}, потоков: {process_threads})"
+        f"(всего фреймов: {total_frames}, процессов: {process_threads})"
     )
 
     monitor_task = asyncio.create_task(
