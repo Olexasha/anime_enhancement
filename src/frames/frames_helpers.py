@@ -1,5 +1,5 @@
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import cv2
 
@@ -65,7 +65,7 @@ def extract_frames_to_batches(
     logger.info(f"Начало извлечения {total_frames} кадров из видео")
     logger.debug(f"Параметры: потоки={threads}, batch_size={batch_size}")
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
+    with ProcessPoolExecutor(max_workers=threads) as executor:
         futures = []
         current_batch_dir = make_default_batch_dir(output_dir)
         logger.debug(f"Создан первый батч: {current_batch_dir}")

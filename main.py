@@ -37,17 +37,21 @@ def print_bottom(title: str) -> None:
 async def clean_up(audio: AudioHandler) -> None:
     """Удаляет временные файлы."""
     logger.debug("Начало очистки временных файлов")
-    await asyncio.gather(
-        asyncio.to_thread(audio.delete_audio_if_exists),
-        asyncio.to_thread(delete_frames, del_upscaled=False),
-        asyncio.to_thread(delete_frames, del_upscaled=True),
-        asyncio.to_thread(
-            map, delete_file, glob.glob(os.path.join(BATCH_VIDEO_PATH, "*.mp4"))
-        ),
-        asyncio.to_thread(
-            map, delete_file, glob.glob(os.path.join(TMP_VIDEO_PATH, "*.mp4"))
-        ),
+    delete_tasks = [
+        delete_frames(del_upscaled=False),
+        delete_frames(del_upscaled=True),
+        audio.delete_audio_if_exists()
+    ]
+    delete_tasks.extend(
+        delete_file(f)
+        for f in glob.glob(os.path.join(BATCH_VIDEO_PATH, "*.mp4"))
     )
+    delete_tasks.extend(
+        delete_file(f)
+        for f in glob.glob(os.path.join(TMP_VIDEO_PATH, "*.mp4"))
+    )
+    if delete_tasks:
+        await asyncio.gather(*delete_tasks)
     logger.debug("Временные файлы успешно удалены")
 
 
@@ -149,7 +153,7 @@ async def main():
 
         logger.info("Добавление аудиодорожки к финальному видео")
         audio.tmp_video_path = final_merge
-        await asyncio.to_thread(audio.insert_audio)
+        await audio.insert_audio()
         logger.success(f"Аудио добавлено к {FINAL_VIDEO}")
         print_bottom("финальная сборка завершена")
 

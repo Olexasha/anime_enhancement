@@ -69,11 +69,104 @@ class VideoHandler:
         try:
             output_video = self._handle_merging(video_paths)
             for video_path in video_paths:
-                delete_file(video_path)
+                await delete_file(video_path)
             return output_video
         except VideoMergingError as error:
             logger.error(f"Ошибка при сборке видео: {str(error)}")
             raise
+
+    @staticmethod
+    def generate_video_from_frames(
+            frame_paths: list, batch_range_start: str, batch_range_end: str, fps: float
+    ) -> str:
+        """
+        Создает видео из списка фреймов, используя OpenCV.
+        :param frame_paths: Список абсолютных путей к фреймам.
+        :param batch_range_start: Начальный номер батча для именования видео.
+        :param batch_range_end: Конечный номер батча для именования видео.
+        :param fps: Частота кадров для выходного видео.
+        :return: Путь к созданному видеофайлу.
+        """
+        video_path = os.path.join(
+            BATCH_VIDEO_PATH, f"short_{batch_range_start}-{batch_range_end}.mp4"
+        )
+        logger.info(f"Создание видео из {len(frame_paths)} фреймов")
+
+        first_frame = cv2.imread(frame_paths[0])
+        if first_frame is None:
+            logger.error(f"Не удалось прочитать первый кадр: {frame_paths[0]}")
+            raise VideoReadFrameError(frame_paths[0])
+        height, width, _ = first_frame.shape
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(
+            filename=video_path,
+            apiPreference=cv2.CAP_FFMPEG,
+            fourcc=fourcc,
+            fps=fps,
+            frameSize=(width, height),
+        )
+        frame_path = ""
+        try:
+            total_frames = len(frame_paths)
+            for i, frame_path in enumerate(frame_paths):
+                frame = cv2.imread(frame_path)
+                if frame is None:
+                    logger.warning(f"Пропущен кадр: {frame_path}")
+                    continue
+                out.write(frame)
+
+                # выводим прогресс каждые 500 кадров
+                frame_num = i + 1
+                if frame_num % 500 == 0 or frame_num == total_frames:
+                    logger.info(
+                        f"Генерирование short видео ({batch_range_start}-"
+                        f"{batch_range_end}): {i + 1}/{total_frames}"
+                    )
+        except cv2.error as e:
+            logger.critical(
+                f"Ошибка при генерировании short видео {batch_range_start}-{batch_range_end}: {str(e)}"
+            )
+            raise VideoReadFrameError(frame_path)
+        finally:
+            out.release()
+        return video_path
+
+    @staticmethod
+    def collect_video_batches(batches_list: list) -> list:
+        """
+        Собирает пути фреймов из указанных батчей.
+        :param batches_list: Список имен батчей, из которых нужно собрать фреймы.
+        :return: Список абсолютных путей к фреймам.
+        """
+        frame_paths = []
+        for batch in batches_list:
+            batch_path = str(os.path.join(OUTPUT_BATCHES_DIR, batch))
+            frames = sorted(glob.glob(os.path.join(batch_path, "frame*.jpg")))
+            frame_paths.extend(frames)
+            logger.debug(f"Собрано {len(frames)} фреймов из {batch}")
+        logger.info(f"Всего собрано {len(frame_paths)} фреймов")
+        return frame_paths
+
+    @staticmethod
+    async def delete_dirs_async(paths: list) -> None:
+        """Асинхронно удаляет файлы с логированием ошибок."""
+        from collections import defaultdict
+        from pathlib import Path
+
+        dirs_to_delete = defaultdict(set)
+        for path in paths:
+            _dir_path = str(Path(path).parent)
+            dirs_to_delete[_dir_path].add(path)
+
+        async def safe_delete_dir(dir_path: str) -> None:
+            try:
+                await delete_dir(dir_path)
+                logger.debug(f"Директория успешно удалена: {dir_path}")
+            except Exception as error:
+                logger.error(f"Ошибка при удалении директории {dir_path}: {error}")
+
+        tasks = [safe_delete_dir(dir_path) for dir_path in dirs_to_delete.keys()]
+        await asyncio.gather(*tasks)
 
     def _handle_merging(self, video_paths: list) -> str:
         """
@@ -171,99 +264,6 @@ class VideoHandler:
         return os.path.join(path, f"{video_name}.mp4")
 
 
-def collect_video_batches(batches_list: list) -> list:
-    """
-    Собирает пути фреймов из указанных батчей.
-    :param batches_list: Список имен батчей, из которых нужно собрать фреймы.
-    :return: Список абсолютных путей к фреймам.
-    """
-    frame_paths = []
-    for batch in batches_list:
-        batch_path = str(os.path.join(OUTPUT_BATCHES_DIR, batch))
-        frames = sorted(glob.glob(os.path.join(batch_path, "frame*.jpg")))
-        frame_paths.extend(frames)
-        logger.debug(f"Собрано {len(frames)} фреймов из {batch}")
-    logger.info(f"Всего собрано {len(frame_paths)} фреймов")
-    return frame_paths
-
-
-def generate_video_from_frames(
-    frame_paths: list, batch_range_start: str, batch_range_end: str, fps: float
-) -> str:
-    """
-    Создает видео из списка фреймов, используя OpenCV.
-    :param frame_paths: Список абсолютных путей к фреймам.
-    :param batch_range_start: Начальный номер батча для именования видео.
-    :param batch_range_end: Конечный номер батча для именования видео.
-    :param fps: Частота кадров для выходного видео.
-    :return: Путь к созданному видеофайлу.
-    """
-    video_path = os.path.join(
-        BATCH_VIDEO_PATH, f"short_{batch_range_start}-{batch_range_end}.mp4"
-    )
-    logger.info(f"Создание видео из {len(frame_paths)} фреймов")
-
-    first_frame = cv2.imread(frame_paths[0])
-    if first_frame is None:
-        logger.error(f"Не удалось прочитать первый кадр: {frame_paths[0]}")
-        raise VideoReadFrameError(frame_paths[0])
-    height, width, _ = first_frame.shape
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(
-        filename=video_path,
-        apiPreference=cv2.CAP_FFMPEG,
-        fourcc=fourcc,
-        fps=fps,
-        frameSize=(width, height),
-    )
-    frame_path = ""
-    try:
-        total_frames = len(frame_paths)
-        for i, frame_path in enumerate(frame_paths):
-            frame = cv2.imread(frame_path)
-            if frame is None:
-                logger.warning(f"Пропущен кадр: {frame_path}")
-                continue
-            out.write(frame)
-
-            # выводим прогресс каждые 600 кадров
-            frame_num = i + 1
-            if frame_num % 600 == 0 or frame_num == total_frames:
-                logger.info(
-                    f"Генерирование short видео ({batch_range_start}-"
-                    f"{batch_range_end}): {i + 1}/{total_frames}"
-                )
-    except cv2.error as e:
-        logger.critical(
-            f"Ошибка при генерировании short видео {batch_range_start}-{batch_range_end}: {str(e)}"
-        )
-        raise VideoReadFrameError(frame_path)
-    finally:
-        out.release()
-    return video_path
-
-
-async def delete_dirs_async(paths: list) -> None:
-    """Асинхронно удаляет файлы с логированием ошибок."""
-    from collections import defaultdict
-    from pathlib import Path
-
-    dirs_to_delete = defaultdict(set)
-    for path in paths:
-        _dir_path = str(Path(path).parent)
-        dirs_to_delete[_dir_path].add(path)
-
-    async def safe_delete_dir(dir_path: str) -> None:
-        try:
-            await asyncio.to_thread(delete_dir, dir_path)
-            logger.debug(f"Директория успешно удалена: {dir_path}")
-        except Exception as error:
-            logger.error(f"Ошибка при удалении директории {dir_path}: {error}")
-
-    tasks = [safe_delete_dir(dir_path) for dir_path in dirs_to_delete.keys()]
-    await asyncio.gather(*tasks)
-
-
 def build_short_video_sync(
     frame_batches: list, fps: float, video_queue: multiprocessing.Queue
 ) -> None:
@@ -280,8 +280,8 @@ def build_short_video_sync(
         f"({batch_range_start}-{batch_range_end})"
     )
 
-    frame_paths = collect_video_batches(frame_batches)
-    video_path = generate_video_from_frames(
+    frame_paths = VideoHandler.collect_video_batches(frame_batches)
+    video_path = VideoHandler.generate_video_from_frames(
         frame_paths, batch_range_start, batch_range_end, fps
     )
 
@@ -294,7 +294,7 @@ def build_short_video_sync(
             path.replace("upscaled_frame_batches", "default_frame_batches")
             for path in frame_paths
         ]
-        asyncio.run(delete_dirs_async(all_paths_to_delete))
+        asyncio.run(VideoHandler.delete_dirs_async(all_paths_to_delete))
     else:
         logger.critical("Не удалось создать видео из фреймов")
         raise VideoReadFrameError("Не удалось создать видео из фреймов")
