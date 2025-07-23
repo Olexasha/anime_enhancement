@@ -1,10 +1,10 @@
 import asyncio
-import glob
-import os
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 from pathlib import Path
+from typing import List
 
 from src.config.settings import (
     INPUT_BATCHES_DIR,
@@ -18,8 +18,13 @@ from src.files.file_actions import create_dir, delete_dir, delete_object
 from src.frames.frames_helpers import count_frames_in_certain_batches
 from src.utils.logger import logger
 
+# Constants for performance optimization
+CHUNK_SIZE = 1000  # Number of files to process at once
+MAX_RETRIES = 3    # Maximum retries for failed operations
+RETRY_DELAY = 2    # Delay between retries in seconds
 
-def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
+
+async def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
     """
     Удаляет кадры из указанной директории.
     Если `del_only_dirs` установлено в True, удаляются только директории, иначе — и файлы, и директории.
@@ -27,21 +32,41 @@ def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
     :param del_only_dirs: Флаг для удаления только директорий. Если False, удаляет и файлы, и директории.
     """
     target_dir = OUTPUT_BATCHES_DIR if del_upscaled else INPUT_BATCHES_DIR
-    file_paths = glob.glob(os.path.join(target_dir, "*"))
     logger.debug(
         f"Начало удаления кадров из {target_dir} (del_only_dirs={del_only_dirs})"
     )
 
-    for file_path in file_paths:
-        try:
-            if del_only_dirs and os.path.isdir(file_path):
-                delete_dir(file_path)
-            elif not del_only_dirs:
-                delete_object(file_path)
-            else:
-                logger.debug(f"Пропущен файл: {file_path} (del_only_dirs=True)")
-        except Exception as error:
-            logger.error(f"Не удалось удалить {file_path}: {str(error)}")
+    try:
+        # Use pathlib for better performance
+        target_path = Path(target_dir)
+        if not target_path.exists():
+            logger.warning(f"Директория с фреймами для удаления не существует: {target_dir}")
+            return
+
+        # Get all items in chunks
+        items = list(target_path.iterdir())
+        
+        # Process items in chunks
+        for chunk in _chunk_items(items, CHUNK_SIZE):
+            for item in chunk:
+                if del_only_dirs and item.is_dir():
+                    await delete_dir(str(item))
+                elif not del_only_dirs:
+                    await delete_object(str(item))
+                
+    except Exception as error:
+        logger.error(f"Ошибка в процессе удаления: {str(error)}")
+        raise
+
+
+@lru_cache(maxsize=128)
+def _check_dir_exists(path: Path) -> bool:
+    """Cached directory existence check."""
+    return path.exists()
+
+def _chunk_items(items: List[Path], chunk_size: int) -> List[List[Path]]:
+    """Split items into chunks."""
+    return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
 async def monitor_progress(
@@ -52,39 +77,41 @@ async def monitor_progress(
     start_time = time.time()
 
     last_logged = 0
-    log_every_sec = 15  # логировать каждые N секунд
+    log_interval = 10  # логировать каждые n секунд
 
     while is_processing[0]:
-        current_frames = count_frames_in_certain_batches(
-            OUTPUT_BATCHES_DIR, batch_numbers
-        )
+        try:
+            current_frames = count_frames_in_certain_batches(
+                OUTPUT_BATCHES_DIR, batch_numbers
+            )
 
-        # Обновляем только если количество изменилось
-        if current_frames > processed_frames:
-            processed_frames = current_frames
-            progress_percent = (processed_frames / total_frames) * 100
+            if current_frames > processed_frames:
+                processed_frames = current_frames
+                progress_percent = (processed_frames / total_frames) * 100
 
-            # Логируем регулярно или при значительном прогрессе
-            current_time = time.time()
-            if (
-                current_time - last_logged >= log_every_sec
-                or progress_percent >= 100
-                or processed_frames == total_frames
-            ):
-                elapsed = current_time - start_time
-                fps = processed_frames / elapsed if elapsed > 0 else 0
-                remaining = (total_frames - processed_frames) / fps if fps > 0 else 0
+                current_time = time.time()
+                if (
+                    current_time - last_logged >= log_interval
+                    or progress_percent >= 100
+                    or processed_frames == total_frames
+                ):
+                    elapsed = current_time - start_time
+                    fps = processed_frames / elapsed if elapsed > 0 else 0
+                    remaining = (total_frames - processed_frames) / fps if fps > 0 else 0
 
-                logger.info(
-                    f"Апскейл фреймов: {processed_frames}/{total_frames} "
-                    f"({progress_percent:.1f}%) | "
-                    f"Прошло: {elapsed:.1f}сек | "
-                    f"Осталось: {remaining:.1f}сек"
-                )
-                last_logged = current_time
-        if processed_frames >= total_frames:
-            break
-        await asyncio.sleep(5)  # Проверяем прогресс каждые 5 секунд
+                    logger.info(
+                        f"Апскейл фреймов ({batch_numbers.start}-{batch_numbers.stop - 1}): "
+                        f"{processed_frames}/{total_frames} ({progress_percent:.1f}%) | "
+                        f"Прошло: {elapsed:.1f}сек | Осталось: {remaining:.1f}сек"
+                    )
+                    last_logged = current_time
+            if processed_frames >= total_frames:
+                break
+            await asyncio.sleep(log_interval)
+        except Exception as error:
+            logger.error(f"Error monitoring progress: {str(error)}")
+            await asyncio.sleep(1)
+
     total_time = time.time() - start_time
     logger.info(
         f"Апскейл фреймов: {total_frames}/{total_frames} "
@@ -95,13 +122,21 @@ async def monitor_progress(
     )
 
 
-def _upscale(ai_threads: str, ai_realesrgan_path: str, batch_num: int):
-    """Выполняет апскейл фреймов в указанном батче."""
+def _upscale(
+    ai_threads: str, ai_realesrgan_path: str, batch_num: int, max_retries: int = MAX_RETRIES
+) -> None:
+    """
+    Выполняет апскейл фреймов в указанном батче
+    :param ai_threads: Параметры тредов для ИИ апскейл обработки.
+    :param ai_realesrgan_path: Путь к исполняемому файлу апскейлера.
+    :param batch_num: Количество батчей с дефолт фреймами апскейльнуть.
+    :param max_retries: Макс. количество попыток апскейла.
+    """
     input_dir = Path(INPUT_BATCHES_DIR) / f"batch_{batch_num}"
     output_dir = create_dir(OUTPUT_BATCHES_DIR, f"batch_{batch_num}")
 
-    if not os.path.exists(ai_realesrgan_path):
-        logger.error(f"Файл скрипта не найден: {ai_realesrgan_path}")
+    if not _check_dir_exists(Path(ai_realesrgan_path)):
+        logger.error(f"Апскейл утилита не найдена: {ai_realesrgan_path}")
         raise FileNotFoundError(ai_realesrgan_path)
 
     command = [
@@ -115,12 +150,28 @@ def _upscale(ai_threads: str, ai_realesrgan_path: str, batch_num: int):
         "-j", ai_threads,
     ]
 
-    logger.debug(f"Запуск апскейла батча {batch_num} с параметрами: {ai_threads}")
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        logger.error(f"Ошибка в батче {batch_num}: {result.stderr}")
-        raise RuntimeError(f"Ошибка апскейла батча {batch_num}")
-    logger.debug(f"Успешно обработан батч {batch_num}")
+    for attempt in range(max_retries):
+        try:
+            logger.debug(f"Запуск апскейла батча {batch_num} с параметрами: {ai_threads}. "
+                         f"Попытка: {attempt + 1}/{max_retries}")
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"Ошибка в батче {batch_num}: {result.stderr}")
+                raise RuntimeError(f"Ошибка апскейла батча {batch_num}")
+            return
+
+        except subprocess.CalledProcessError as error:
+            logger.error(
+                f"Ошибка в батче {batch_num} (попытка {attempt + 1}): {error.stderr}"
+            )
+            if attempt < max_retries - 1:
+                time.sleep(RETRY_DELAY)
+            else:
+                raise RuntimeError(f"Не удалось заапскейлить {batch_num} после {max_retries} попыток")
+
+        except Exception as error:
+            logger.error(f"Неожиданная ошибка в батче {batch_num}: {str(error)}")
+            raise
 
 
 async def upscale_batches(
@@ -129,8 +180,9 @@ async def upscale_batches(
     ai_realesrgan_path: str,
     start_batch: int,
     end_batch: int,
-):
-    """Асинхронно обрабатывает диапазон батчей."""
+    max_retries: int = MAX_RETRIES,
+) -> None:
+    """Асинхронно обрабатывает диапазон батчей"""
     batches_range = range(start_batch, end_batch + 1)
     total_frames = count_frames_in_certain_batches(INPUT_BATCHES_DIR, batches_range)
     is_processing = [True]
@@ -149,7 +201,7 @@ async def upscale_batches(
         with ProcessPoolExecutor(max_workers=process_threads) as executor:
             tasks = [
                 loop.run_in_executor(
-                    executor, _upscale, ai_threads, ai_realesrgan_path, batch_num
+                    executor, _upscale, ai_threads, ai_realesrgan_path, batch_num, max_retries
                 )
                 for batch_num in batches_range
             ]

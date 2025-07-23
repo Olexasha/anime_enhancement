@@ -93,7 +93,7 @@ class AudioHandler:
         with ProcessPoolExecutor() as pool:
             return await loop.run_in_executor(pool, self.extract_audio_sync)
 
-    def insert_audio(self) -> None:
+    async def insert_audio(self) -> None:
         """
         Добавляет аудиофайл в видео, сохраняя оригинальное качество видео и аудио.
         """
@@ -131,8 +131,8 @@ class AudioHandler:
             raise
 
         # очистка временных файлов
-        delete_file(audio_file)
-        delete_file(self.tmp_video_path)
+        await delete_file(audio_file)
+        await delete_file(self.tmp_video_path)
         logger.debug("Временные файлы удалены")
 
     def get_audio_full_path(self) -> str:
@@ -142,12 +142,12 @@ class AudioHandler:
         filename = os.path.splitext(os.path.basename(self.in_video_path))[0]
         return os.path.join(self.audio_path, f"{filename}.{self.audio_format}")
 
-    def delete_audio_if_exists(self, audio_path: str = None) -> None:
+    async def delete_audio_if_exists(self, audio_path: str = None) -> None:
         """Удаляет аудиофайл, если он существует"""
         if audio_path is None:
             audio_path = self.get_audio_full_path()
         if os.path.exists(audio_path):
-            delete_file(audio_path)
+            await delete_file(audio_path)
             logger.info(f"Аудиофайл удален: {audio_path}")
         else:
             logger.debug(f"Аудиофайл не найден: {audio_path}")
