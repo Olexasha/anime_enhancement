@@ -13,18 +13,19 @@ from src.utils.logger import logger
 
 
 class ComputerParams:
-    """Класс для сбора параметров системы и расчета оптимальных настроек выполнения задач.
+    """
+    Класс для сбора параметров системы и расчета оптимальных настроек выполнения задач.
 
-        Собирает информацию об аппаратных характеристиках системы и предоставляет методы
-        для определения оптимальных параметров выполнения ресурсоемких задач.
+    Собирает информацию об аппаратных характеристиках системы и предоставляет методы
+    для определения оптимальных параметров выполнения ресурсоемких задач.
 
-        Атрибуты:
-            cpu_name (str): Название процессора
-            cpu_threads (int): Общее количество потоков процессора
-            safe_cpu_threads (int): Безопасное количество используемых потоков (80% от общего)
-            ram_total (float): Общий объем оперативной памяти в ГБ
-            ssd_speed (float): Примерная скорость работы накопителя в MB/s
-        """
+    Атрибуты:
+        cpu_name (str): Название процессора
+        cpu_threads (int): Общее количество потоков процессора
+        safe_cpu_threads (int): Безопасное количество используемых потоков (80% от общего)
+        ram_total (float): Общий объем оперативной памяти в ГБ
+        ssd_speed (float): Примерная скорость работы накопителя в MB/s
+    """
 
     MIN_RAM_GB = 4
     MIN_CPU_THREADS = 2
@@ -45,7 +46,8 @@ class ComputerParams:
 
     @lru_cache(maxsize=1)
     def _get_cpu_threads(self) -> int:
-        """Получение количества доступных потоков процессора.
+        """
+        Получение количества доступных потоков процессора.
         Использует несколько методов определения с резервными вариантами.
         :return: Количество логических процессоров (не менее 1)
         """
@@ -60,19 +62,21 @@ class ComputerParams:
 
     @lru_cache(maxsize=1)
     def _get_ram_total(self) -> float:
-        """Получение общего объема оперативной памяти в ГБ.
+        """
+        Получение общего объема оперативной памяти в ГБ.
         :return: Объем RAM в гигабайтах с округлением до 2 знаков
         """
         try:
             mem = psutil.virtual_memory()
             return round(mem.total / (1024**3), 2)
         except Exception as e:
-            logger.warning(f"Error getting RAM info: {str(e)}")
+            logger.warning(f"Ошибка при получении инфо об ОЗУ: {str(e)}")
             return 4.0  # консервативное значение по умолчанию
 
     @cached_property
     def os(self) -> str:
-        """Определение типа операционной системы.
+        """
+        Определение типа операционной системы.
         :return: Идентификатор ОС ('win', 'linux' или 'macos')
         :rtype: str
         :raises ValueError: Если ОС не поддерживается
@@ -94,7 +98,8 @@ class ComputerParams:
 
     @cached_property
     def gpu_name(self) -> str:
-        """Получение названия GPU с обработкой ошибок.
+        """
+        Получение названия GPU с обработкой ошибок.
         :return: Название GPU или сообщение об ошибке
         :rtype: str
         """
@@ -112,7 +117,8 @@ class ComputerParams:
 
     @cached_property
     def gpu_memory(self) -> int:
-        """Получение объема памяти GPU в MB.
+        """
+        Получение объема памяти GPU в MB.
         :return: Объем видеопамяти в MB (0 если не удалось определить)
         :rtype: int
         """
@@ -139,16 +145,16 @@ class ComputerParams:
                 ROOT_DIR, "src", "utils", "realesrgan", f"realesrgan-{self.os}", executable
             )
             if not Path(path).exists():
-                logger.warning(f"AI executable not found at {path}")
-                raise FileNotFoundError(f"AI executable not found at {path}")
+                logger.warning(f"AI исполняемый файл не найден {path}")
+                raise FileNotFoundError(f"AI исполняемый файл не найден {path}")
             return path
         except Exception as e:
-            logger.error(f"Error getting AI executable path: {str(e)}")
+            logger.error(f"Ошибка при получении пути к исполняемому файлу realesrgan: {str(e)}")
             raise
 
     @staticmethod
     def _is_nvidia_smi_installed() -> bool:
-        """Check if nvidia-smi is available"""
+        """Проверяет если nvidia-smi доступен на ПК"""
         try:
             sp.run(["nvidia-smi"], capture_output=True, check=True)
             return True
@@ -167,10 +173,10 @@ class ComputerParams:
 
             # подбираем load:proc:save
             j_params = f"{load_threads}:{proc_threads}:{save_threads}"
-            logger.info(f"Optimal thread configuration: {j_params} with {processes} processes")
+            logger.info(f"Оптимальная конфигурация тредов: {j_params} с {processes} процессами")
             return j_params, processes
         except Exception as e:
-            logger.error(f"Error calculating optimal threads: {str(e)}")
+            logger.error(f"Ошибка при вычислении тредов load:proc:save для нейронок: {str(e)}")
             raise
 
     def _calculate_processing_threads(self) -> int:
@@ -180,20 +186,20 @@ class ComputerParams:
                 return 6
             return min(4, self.safe_cpu_threads // 2)
         except Exception as e:
-            logger.warning(f"Error calculating processing threads: {str(e)}")
+            logger.warning(f"Ошибка при вычислении безопасных тредов: {str(e)}")
             return 2  # дефолт
 
     def _calculate_safe_cpu_threads(self) -> int:
-        """Calculate safe CPU threads usage"""
+        """Считает безопасное количество CPU тредов для использования"""
         try:
-            # Use 80% of available threads, but not less than 2
+            # используем только 80% доступных тредов, но не меньше 2х
             return max(2, round(self.cpu_threads * 0.8))
         except Exception as e:
-            logger.warning(f"Error calculating safe CPU threads: {str(e)}")
-            return 2
+            logger.warning(f"Ошибка при вычислении CPU тредов: {str(e)}")
+            return 2  # дефолт
 
     def _estimate_ssd_speed(self) -> float:
-        """Грубая оценка скорости диска (MB/s)."""
+        """Грубая оценка скорости диска (MB/s)"""
         try:
             if self.os == "win":
                 # консервоативная оценка для винды
@@ -216,16 +222,16 @@ class ComputerParams:
                 )
                 match = re.search(r"(\d+(?:\.\d+)?)\s+MB/s", result.stderr)
                 speed = float(match.group(1)) if match else 500
-                logger.info(f"SSD speed estimated at {speed} MB/s")
+                logger.info(f"Скорость SSD посчитана как {speed} MB/s")
                 return speed
             except Exception as e:
-                logger.warning(f"SSD speed test failed: {str(e)}")
+                logger.warning(f"SSD тест провален: {str(e)}")
                 return 500  # дефолт
             finally:
                 Path(test_file).unlink()
 
         except Exception as e:
-            logger.warning(f"Error estimating SSD speed: {str(e)}")
+            logger.warning(f"Ошибка при вычислении скорости SSD: {str(e)}")
             return 500
 
     def _calculate_save_threads(self) -> int:
@@ -235,7 +241,7 @@ class ComputerParams:
                 return 2
             return 2 if self.ssd_speed >= 500 else 1  # SATA SSD или HDD
         except Exception as e:
-            logger.warning(f"Error calculating save threads: {str(e)}")
+            logger.warning(f"Ошибка при вычислении save тредов: {str(e)}")
             return 1
 
     def _calculate_proc_threads(self, processes: int) -> int:
@@ -244,7 +250,7 @@ class ComputerParams:
             safe_threads = max(2, self.safe_cpu_threads // max(1, processes) - 1)
             return min(8, safe_threads)  # не больше 8 даже для мощных CPU
         except Exception as e:
-            logger.warning(f"Error calculating proc threads: {str(e)}")
+            logger.warning(f"Ошибка при вычислении proc тредов: {str(e)}")
             return 2
 
     @staticmethod
@@ -254,7 +260,7 @@ class ComputerParams:
             result = sp.run(cmd, capture_output=True, text=True, check=True)
             return result.stdout.strip()
         except (sp.CalledProcessError, FileNotFoundError) as e:
-            logger.error(f"Subprocess error: {str(e)}")
+            logger.error(f"Subprocess ошибка: {str(e)}")
             return None
 
     def __validate_resources(self) -> None:

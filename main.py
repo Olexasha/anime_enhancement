@@ -24,12 +24,13 @@ from src.video.video_handling import VideoHandler
 
 
 def print_header(title: str) -> None:
-    """Логирует заголовок программы."""
+    """Логирует префикс программы."""
     logger.info(f"{'=' * 50}")
     logger.info(f"🎯 {title.upper()}".center(50))
 
 
 def print_bottom(title: str) -> None:
+    """Логирует постфикс программы."""
     logger.info(f"✅ {title.upper()}".center(50))
     logger.info(f"{'=' * 50}\n")
 

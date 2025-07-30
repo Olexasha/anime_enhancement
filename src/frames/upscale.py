@@ -2,11 +2,11 @@ import asyncio
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor
-from functools import lru_cache
 from pathlib import Path
 from typing import List
 
 from src.config.settings import (
+    FRAMES_PER_BATCH,
     INPUT_BATCHES_DIR,
     MODEL_DIR,
     MODEL_NAME,
@@ -18,10 +18,8 @@ from src.files.file_actions import create_dir, delete_dir, delete_object
 from src.frames.frames_helpers import count_frames_in_certain_batches
 from src.utils.logger import logger
 
-# Constants for performance optimization
-CHUNK_SIZE = 1000  # Number of files to process at once
-MAX_RETRIES = 3    # Maximum retries for failed operations
-RETRY_DELAY = 2    # Delay between retries in seconds
+MAX_RETRIES = 3    # макс количество попыток при неудаче на обработке фреймов
+RETRY_DELAY = 2    # задержка между попытками в сек
 
 
 async def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
@@ -37,17 +35,15 @@ async def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
     )
 
     try:
-        # Use pathlib for better performance
         target_path = Path(target_dir)
         if not target_path.exists():
             logger.warning(f"Директория с фреймами для удаления не существует: {target_dir}")
             return
 
-        # Get all items in chunks
         items = list(target_path.iterdir())
         
-        # Process items in chunks
-        for chunk in _chunk_items(items, CHUNK_SIZE):
+        # удаляем фреймы кусочками (chunks)
+        for chunk in _chunk_items(items, FRAMES_PER_BATCH):
             for item in chunk:
                 if del_only_dirs and item.is_dir():
                     await delete_dir(str(item))
@@ -59,13 +55,8 @@ async def delete_frames(del_upscaled: bool, del_only_dirs: bool = True):
         raise
 
 
-@lru_cache(maxsize=128)
-def _check_dir_exists(path: Path) -> bool:
-    """Cached directory existence check."""
-    return path.exists()
-
 def _chunk_items(items: List[Path], chunk_size: int) -> List[List[Path]]:
-    """Split items into chunks."""
+    """Делит фреймы на кусочки (chunk) для более быстрого удаления"""
     return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
@@ -135,7 +126,7 @@ def _upscale(
     input_dir = Path(INPUT_BATCHES_DIR) / f"batch_{batch_num}"
     output_dir = create_dir(OUTPUT_BATCHES_DIR, f"batch_{batch_num}")
 
-    if not _check_dir_exists(Path(ai_realesrgan_path)):
+    if not Path(ai_realesrgan_path).exists():
         logger.error(f"Апскейл утилита не найдена: {ai_realesrgan_path}")
         raise FileNotFoundError(ai_realesrgan_path)
 
@@ -210,5 +201,5 @@ async def upscale_batches(
         logger.error(f"Ошибка при обработке батчей: {str(error)}")
         raise
     finally:
-        is_processing[0] = False  # Завершаем мониторинг прогресса
-        await monitor_task  # Ожидаем завершения задачи мониторинга
+        is_processing[0] = False  # завершаем мониторинг прогресса
+        await monitor_task  # ожидаем завершения задачи мониторинга
