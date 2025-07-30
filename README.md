@@ -4,8 +4,8 @@
 Enhances Full HD anime to 4K (or higher) using [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), while preserving original audio and optimizing for performance via **batching and multithreading**.
 
 <div align="center">
-  <img src="https://img.shields.io/badge/Python-3.12+-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey" alt="Platform">
+  <img src="https://img.shields.io/badge/Python-3.12+-orange?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
 </div>
 
