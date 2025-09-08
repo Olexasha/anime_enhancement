@@ -145,11 +145,29 @@ class ComputerParams:
                 ROOT_DIR, "src", "utils", "realesrgan", f"realesrgan-{self.os}", executable
             )
             if not Path(path).exists():
-                logger.warning(f"AI исполняемый файл не найден {path}")
-                raise FileNotFoundError(f"AI исполняемый файл не найден {path}")
+                msg = f"AI RealESRGAN-ncnn-vulkan исполняемый файл не найден {path}"
+                logger.warning(msg)
+                raise FileNotFoundError(msg)
             return path
         except Exception as e:
             logger.error(f"Ошибка при получении пути к исполняемому файлу realesrgan: {str(e)}")
+            raise
+
+    @cached_property
+    def ai_waifu2x_path(self) -> str:
+        """Получает AI Waifu2x-ncnn-vulkan путь к исполняемому файлу"""
+        try:
+            executable = "waifu2x-ncnn-vulkan" + (".exe" if self.os == "win" else "")
+            path = os.path.join(
+                ROOT_DIR, "src", "utils", "waifu2x", f"waifu2x-{self.os}", executable
+            )
+            if not Path(path).exists():
+                msg = f"AI Waifu2x-ncnn-vulkan исполняемый файл не найд {path}"
+                logger.warning(msg)
+                raise FileNotFoundError(msg)
+            return path
+        except Exception as e:
+            logger.error(f"Ошибка при получении пути к исполняемому файлу waifu2x: {str(e)}")
             raise
 
     @staticmethod

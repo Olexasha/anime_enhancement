@@ -16,9 +16,15 @@ from src.config.settings import (
     START_BATCH_TO_UPSCALE,
     TMP_VIDEO_PATH,
 )
+from src.files.batch_utils import (
+    BatchType,
+    delete_default_batches,
+    delete_denoise_batches,
+    delete_frames,
+)
 from src.files.file_actions import delete_file
 from src.frames.frames_helpers import extract_frames_to_batches, get_fps_accurate
-from src.frames.upscale import delete_frames, upscale_batches
+from src.frames.improve import ProcessingType, improve_batches
 from src.utils.logger import logger
 from src.video.video_handling import VideoHandler
 
@@ -39,17 +45,16 @@ async def clean_up(audio: AudioHandler) -> None:
     """Удаляет временные файлы."""
     logger.debug("Начало очистки временных файлов")
     delete_tasks = [
-        delete_frames(del_upscaled=False),
-        delete_frames(del_upscaled=True),
-        audio.delete_audio_if_exists()
+        delete_frames(BatchType.DEFAULT, del_all=True),  # Удаляем все default батчи
+        delete_frames(BatchType.DENOISE, del_all=True),  # Удаляем все denoise батчи
+        delete_frames(BatchType.UPSCALE, del_all=True),  # Удаляем все upscale батчи
+        audio.delete_audio_if_exists(),
     ]
     delete_tasks.extend(
-        delete_file(f)
-        for f in glob.glob(os.path.join(BATCH_VIDEO_PATH, "*.mp4"))
+        delete_file(f) for f in glob.glob(os.path.join(BATCH_VIDEO_PATH, "*.mp4"))
     )
     delete_tasks.extend(
-        delete_file(f)
-        for f in glob.glob(os.path.join(TMP_VIDEO_PATH, "*.mp4"))
+        delete_file(f) for f in glob.glob(os.path.join(TMP_VIDEO_PATH, "*.mp4"))
     )
     if delete_tasks:
         await asyncio.gather(*delete_tasks)
@@ -80,6 +85,7 @@ async def process_batches(
     threads: int,
     ai_threads: str,
     video: VideoHandler,
+    ai_waifu2x_path: str,
     ai_realesrgan_path: str,
     start_batch: int,
     end_batch_to_upscale: int,
@@ -90,9 +96,28 @@ async def process_batches(
         end_batch = min(start_batch + threads - 1, end_batch_to_upscale)
         logger.info(f"Обработка батчей с {start_batch} по {end_batch}")
 
-        await upscale_batches(
-            threads, ai_threads, ai_realesrgan_path, start_batch, end_batch
+        # денойз фреймов
+        await improve_batches(
+            ProcessingType.DENOISE,
+            threads,
+            ai_threads,
+            ai_waifu2x_path,
+            start_batch,
+            end_batch,
         )
+        await delete_default_batches(start_batch, end_batch)
+        logger.success(f"Батчи {start_batch}-{end_batch} успешно денойзены")
+
+        # апскейл фреймов
+        await improve_batches(
+            ProcessingType.UPSCALE,
+            threads,
+            ai_threads,
+            ai_realesrgan_path,
+            start_batch,
+            end_batch,
+        )
+        await delete_denoise_batches(start_batch, end_batch)
         logger.success(f"Батчи {start_batch}-{end_batch} успешно апскейлены")
 
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
@@ -108,6 +133,7 @@ async def main():
     try:
         my_computer = ComputerParams()
         ai_realesrgan_path = my_computer.ai_realesrgan_path
+        ai_waifu2x_path = my_computer.ai_waifu2x_path
         ai_threads, process_threads = my_computer.get_optimal_threads()
 
         # логирование параметров системы
@@ -119,6 +145,7 @@ async def main():
             f"\n\tСкорость SSD: ~{my_computer.ssd_speed} MB/s"
             f"\n\tRAM: ~{my_computer.ram_total} GB"
             f"\n\tПараметры нейронок: -j {ai_threads}"
+            f"\n\tПуть к нейронке денойза: {ai_waifu2x_path}"
             f"\n\tПуть к нейронке апскейла: {ai_realesrgan_path}"
         )
 
@@ -134,18 +161,19 @@ async def main():
         print_bottom("`сырьё` из видео извлечено")
 
         # определяем диапазон батчей для обработки
-        print_header("генерируем апскейленные короткие видео...")
+        print_header("генерируем улучшенные короткие видео...")
         end_batch_to_upscale = calculate_batches()
         logger.info(f"Всего батчей для обработки: {end_batch_to_upscale}")
         await process_batches(
             process_threads,
             ai_threads,
             video,
+            ai_waifu2x_path,
             ai_realesrgan_path,
             START_BATCH_TO_UPSCALE,
             end_batch_to_upscale,
         )
-        print_bottom("апскейленные короткие видео сгенерированы")
+        print_bottom("улучшенные короткие видео сгенерированы")
 
         print_header("начало финальной сборки видео...")
         total_short_videos = ceil(end_batch_to_upscale / process_threads)
