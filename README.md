@@ -118,8 +118,8 @@ anime_enhancement/
 
 ## 📋 Future Roadmap
 
-- [ ] Add support for alternative upscaling models
-- [ ] Add denoising neural network (e.g. waifu2x)
+- [x] Add support for alternative upscaling models
+- [x] Add denoising neural network (e.g. waifu2x)
 - [ ] Add motion interpolation (e.g. RIFE)
 - [ ] Argparse CLI mode
 - [ ] Complete GUI interface
