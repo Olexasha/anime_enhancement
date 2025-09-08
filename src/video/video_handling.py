@@ -1,12 +1,14 @@
 import asyncio
+import gc
 import glob
 import multiprocessing
 import os
 import time
+from pathlib import Path
 
 import cv2
 
-from src.config.settings import BATCH_VIDEO_PATH, OUTPUT_BATCHES_DIR, TMP_VIDEO_PATH
+from src.config.settings import BATCH_VIDEO_PATH, TMP_VIDEO_PATH, UPSCALED_BATCHES_DIR
 from src.files.file_actions import delete_dir, delete_file
 from src.utils.logger import logger
 from src.video.video_exceptions import (
@@ -26,6 +28,16 @@ class VideoHandler:
     def __init__(self, fps: float):
         self.fps = fps
         self.video_queue = multiprocessing.Queue()
+        self.final_videos_same_name = 1
+
+    @staticmethod
+    def _force_memory_cleanup() -> None:
+        """Принудительно очищает память."""
+        try:
+            gc.collect()
+            logger.debug("Выполнена принудительная очистка памяти")
+        except Exception as e:
+            logger.warning(f"Ошибка при очистке памяти: {e}")
 
     def build_short_video(self, frame_batches: list) -> None:
         logger.debug("Запуск асинхронного сбора короткого видео")
@@ -80,7 +92,7 @@ class VideoHandler:
             frame_paths: list, batch_range_start: str, batch_range_end: str, fps: float
     ) -> str:
         """
-        Создает видео из списка фреймов, используя OpenCV.
+        Создает видео из списка фреймов, используя OpenCV с периодической очисткой памяти.
         :param frame_paths: Список абсолютных путей к фреймам.
         :param batch_range_start: Начальный номер батча для именования видео.
         :param batch_range_end: Конечный номер батча для именования видео.
@@ -97,6 +109,7 @@ class VideoHandler:
             logger.error(f"Не удалось прочитать первый кадр: {frame_paths[0]}")
             raise VideoReadFrameError(frame_paths[0])
         height, width, _ = first_frame.shape
+        
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(
             filename=video_path,
@@ -115,6 +128,11 @@ class VideoHandler:
                     continue
                 out.write(frame)
 
+                # Очищаем память каждые 100 кадров для больших видео
+                if i % 100 == 0 and i > 0:
+                    del frame
+                    gc.collect()
+
                 # выводим прогресс каждые 500 кадров
                 frame_num = i + 1
                 if frame_num % 500 == 0 or frame_num == total_frames:
@@ -129,6 +147,8 @@ class VideoHandler:
             raise VideoReadFrameError(frame_path)
         finally:
             out.release()
+            # Очищаем память после завершения
+            gc.collect()
         return video_path
 
     @staticmethod
@@ -140,7 +160,7 @@ class VideoHandler:
         """
         frame_paths = []
         for batch in batches_list:
-            batch_path = str(os.path.join(OUTPUT_BATCHES_DIR, batch))
+            batch_path = str(os.path.join(UPSCALED_BATCHES_DIR, batch))
             frames = sorted(glob.glob(os.path.join(batch_path, "frame*.jpg")))
             frame_paths.extend(frames)
             logger.debug(f"Собрано {len(frames)} фреймов из {batch}")
@@ -170,7 +190,7 @@ class VideoHandler:
 
     def _handle_merging(self, video_paths: list) -> str:
         """
-        Обрабатывает объединение видео из списка путей к видеофайлам.
+        Обрабатывает объединение видео из списка путей к видеофайлам с периодической очисткой памяти.
         :param video_paths: Список путей к видеофайлам для объединения.
         :return: Путь к созданному видеофайлу.
         """
@@ -180,10 +200,20 @@ class VideoHandler:
             f"merged_{first_num}-{last_num}", TMP_VIDEO_PATH
         )
 
+        if Path(output_path).exists():
+            self.final_videos_same_name += 1
+            output_path = f"{output_path.split(".mp4")[0]}_{str(self.final_videos_same_name)}.mp4"
+
         cap = cv2.VideoCapture(video_paths[0])
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
+
+        # Подсчитываем общее количество кадров
+        total_frames = sum(
+            int(cv2.VideoCapture(p).get(cv2.CAP_PROP_FRAME_COUNT))
+            for p in video_paths
+        )
 
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(
@@ -194,10 +224,6 @@ class VideoHandler:
             frameSize=(width, height),
         )
         try:
-            total_frames = sum(
-                int(cv2.VideoCapture(p).get(cv2.CAP_PROP_FRAME_COUNT))
-                for p in video_paths
-            )
             start_time = time.time()
             self.__merge_videos(video_paths, out, total_frames, start_time)
             total_time = time.time() - start_time
@@ -210,18 +236,20 @@ class VideoHandler:
             raise VideoMergingError(f"Ошибка при объединении видео: {e}")
         finally:
             out.release()
+            # Очищаем память после завершения
+            self._force_memory_cleanup()
 
         return output_path
 
-    @staticmethod
     def __merge_videos(
+        self,
         video_paths: list,
         out: cv2.VideoWriter,
         total_frames: int,
         start_time: float,
     ) -> None:
         """
-        Объединяет видео из списка путей к видеофайлам в один выходной файл.
+        Объединяет видео из списка путей к видеофайлам в один выходной файл с очисткой памяти.
         :param video_paths: Список путей к видеофайлам для объединения.
         :param out: Объект VideoWriter для записи выходного видео.
         :param total_frames: Общее количество кадров для отслеживания прогресса.
@@ -244,6 +272,11 @@ class VideoHandler:
                 out.write(frame)
                 processed_frames += 1
 
+                # Очищаем память каждые 500 кадров для больших видео
+                if processed_frames % 500 == 0:
+                    del frame
+                    self._force_memory_cleanup()
+
                 # Обновляем прогресс каждые 1000 кадров
                 if processed_frames % 1000 == 0:
                     elapsed = time.time() - start_time
@@ -257,6 +290,8 @@ class VideoHandler:
                         f"Осталось: {remaining:.1f}сек"
                     )
             cap.release()
+            # Очищаем память после обработки каждого видео
+            self._force_memory_cleanup()
 
     @staticmethod
     def __build_video_path(video_name: str, path=BATCH_VIDEO_PATH):
