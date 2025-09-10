@@ -62,7 +62,7 @@ async def delete_frames(
     :param del_only_dirs: Если True, удаляет только директории, иначе файлы и директории
     """
     if batch_type is None:
-        batch_type = BatchType.UPSCALE  # По умолчанию для обратной совместимости
+        batch_type = BatchType.UPSCALE  # по умолчанию для обратной совместимости
 
     target_dir = BATCH_TYPE_DIRS[batch_type]
     logger.debug(

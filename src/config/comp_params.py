@@ -170,6 +170,23 @@ class ComputerParams:
             logger.error(f"Ошибка при получении пути к исполняемому файлу waifu2x: {str(e)}")
             raise
 
+    @cached_property
+    def ai_rife_path(self) -> str:
+        """Получает AI RIFE-ncnn-vulkan путь к исполняемому файлу"""
+        try:
+            executable = "rife-ncnn-vulkan" + (".exe" if self.os == "win" else "")
+            path = os.path.join(
+                ROOT_DIR, "src", "utils", "rife", f"rife-{self.os}", executable
+            )
+            if not Path(path).exists():
+                msg = f"AI Rife-ncnn-vulkan исполняемый файл не найд {path}"
+                logger.warning(msg)
+                raise FileNotFoundError(msg)
+            return path
+        except Exception as e:
+            logger.error(f"Ошибка при получении пути к исполняемому файлу rife: {str(e)}")
+            raise
+
     @staticmethod
     def _is_nvidia_smi_installed() -> bool:
         """Проверяет если nvidia-smi доступен на ПК"""
@@ -187,7 +204,7 @@ class ComputerParams:
             processes = self._calculate_processing_threads()
             save_threads = self._calculate_save_threads()
             proc_threads = self._calculate_proc_threads(processes)
-            load_threads = max(1, save_threads - 1)
+            load_threads = max(1, save_threads)
 
             # подбираем load:proc:save
             j_params = f"{load_threads}:{proc_threads}:{save_threads}"

@@ -4,12 +4,20 @@ import glob
 import multiprocessing
 import os
 import time
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 
-from src.config.settings import BATCH_VIDEO_PATH, TMP_VIDEO_PATH, UPSCALED_BATCHES_DIR
-from src.files.file_actions import delete_dir, delete_file
+from src.config.settings import (
+    BATCH_VIDEO_PATH,
+    FRAMES_MULTIPLY_FACTOR,
+    INTERPOLATED_BATCHES_DIR,
+    OUTPUT_IMAGE_FORMAT,
+    TMP_VIDEO_PATH,
+)
+from src.files.batch_utils import delete_interpolate_batches
+from src.files.file_actions import delete_file
 from src.utils.logger import logger
 from src.video.video_exceptions import (
     VideoDoesNotExist,
@@ -26,9 +34,14 @@ class VideoHandler:
     """
 
     def __init__(self, fps: float):
-        self.fps = fps
+        self.fps = self.__calculate_fps_after_ai(fps)
         self.video_queue = multiprocessing.Queue()
         self.final_videos_same_name = 1
+
+    @staticmethod
+    @lru_cache(maxsize=10)
+    def __calculate_fps_after_ai(fps: float) -> float:
+        return fps * FRAMES_MULTIPLY_FACTOR
 
     @staticmethod
     def _force_memory_cleanup() -> None:
@@ -89,7 +102,7 @@ class VideoHandler:
 
     @staticmethod
     def generate_video_from_frames(
-            frame_paths: list, batch_range_start: str, batch_range_end: str, fps: float
+        frame_paths: list, batch_range_start: str, batch_range_end: str, fps: float
     ) -> str:
         """
         Создает видео из списка фреймов, используя OpenCV с периодической очисткой памяти.
@@ -160,33 +173,12 @@ class VideoHandler:
         """
         frame_paths = []
         for batch in batches_list:
-            batch_path = str(os.path.join(UPSCALED_BATCHES_DIR, batch))
-            frames = sorted(glob.glob(os.path.join(batch_path, "frame*.jpg")))
+            batch_path = str(os.path.join(INTERPOLATED_BATCHES_DIR, batch))
+            frames = sorted(glob.glob(os.path.join(batch_path, f"*.{OUTPUT_IMAGE_FORMAT}")))
             frame_paths.extend(frames)
             logger.debug(f"Собрано {len(frames)} фреймов из {batch}")
         logger.info(f"Всего собрано {len(frame_paths)} фреймов")
         return frame_paths
-
-    @staticmethod
-    async def delete_dirs_async(paths: list) -> None:
-        """Асинхронно удаляет файлы с логированием ошибок."""
-        from collections import defaultdict
-        from pathlib import Path
-
-        dirs_to_delete = defaultdict(set)
-        for path in paths:
-            _dir_path = str(Path(path).parent)
-            dirs_to_delete[_dir_path].add(path)
-
-        async def safe_delete_dir(dir_path: str) -> None:
-            try:
-                await delete_dir(dir_path)
-                logger.debug(f"Директория успешно удалена: {dir_path}")
-            except Exception as error:
-                logger.error(f"Ошибка при удалении директории {dir_path}: {error}")
-
-        tasks = [safe_delete_dir(dir_path) for dir_path in dirs_to_delete.keys()]
-        await asyncio.gather(*tasks)
 
     def _handle_merging(self, video_paths: list) -> str:
         """
@@ -324,12 +316,8 @@ def build_short_video_sync(
         video_queue.put(video_path)
         logger.info(f"Видео добавлено в очередь: {video_path}")
         logger.success(f"Видео создано: {video_path} (FPS: {fps})")
-        # зачищаем отработанные фреймы (апскейлы и дефолты), удалением директорий
-        all_paths_to_delete = frame_paths + [
-            path.replace("upscaled_frame_batches", "default_frame_batches")
-            for path in frame_paths
-        ]
-        asyncio.run(VideoHandler.delete_dirs_async(all_paths_to_delete))
+        # зачищаем интеполированные фреймы
+        asyncio.run(delete_interpolate_batches(int(batch_range_start), int(batch_range_end)))
     else:
         logger.critical("Не удалось создать видео из фреймов")
         raise VideoReadFrameError("Не удалось создать видео из фреймов")

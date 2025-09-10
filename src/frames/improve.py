@@ -9,10 +9,18 @@ from typing import Any, Dict
 from src.config.settings import (
     DENOISE_FACTOR,
     DENOISED_BATCHES_DIR,
+    ENABLE_SPATIAL_TTA_MODE,
+    ENABLE_TEMPORAL_TTA_MODE,
+    ENABLE_UHD_MODE,
+    FRAMES_MULTIPLY_FACTOR,
+    FRAMES_PER_BATCH,
     INPUT_BATCHES_DIR,
+    INTERPOLATED_BATCHES_DIR,
     OUTPUT_IMAGE_FORMAT,
     REALESRGAN_MODEL_DIR,
     REALESRGAN_MODEL_NAME,
+    RIFE_MODEL_DIR,
+    TIME_STEP,
     UPSCALE_FACTOR,
     UPSCALED_BATCHES_DIR,
     WAIFU2X_MODEL_DIR,
@@ -31,25 +39,34 @@ class ProcessingType(Enum):
 
     UPSCALE = "upscale"
     DENOISE = "denoise"
+    INTERPOLATE = "interpolate"
 
 
 # Конфигурация для каждого типа обработки
 PROCESSING_CONFIG: Dict[ProcessingType, Dict[str, Any]] = {
-    ProcessingType.UPSCALE: {
-        "input_dir": DENOISED_BATCHES_DIR,
-        "output_dir": UPSCALED_BATCHES_DIR,
-        "model_dir": REALESRGAN_MODEL_DIR,
-        "model_name": REALESRGAN_MODEL_NAME,
-        "scale_factor": UPSCALE_FACTOR,
-        "display_name": "Upscale",
-    },
     ProcessingType.DENOISE: {
         "input_dir": INPUT_BATCHES_DIR,
         "output_dir": DENOISED_BATCHES_DIR,
         "model_dir": WAIFU2X_MODEL_DIR,
         "scale_factor": WAIFU2X_UPSCALE_FACTOR,
         "denoise_factor": DENOISE_FACTOR,
-        "display_name": "Denoise",
+        "display_name": "Денойз",
+    },
+    ProcessingType.UPSCALE: {
+        "input_dir": DENOISED_BATCHES_DIR,
+        "output_dir": UPSCALED_BATCHES_DIR,
+        "model_dir": REALESRGAN_MODEL_DIR,
+        "model_name": REALESRGAN_MODEL_NAME,
+        "scale_factor": UPSCALE_FACTOR,
+        "display_name": "Апскейл",
+    },
+    ProcessingType.INTERPOLATE: {
+        "input_dir": UPSCALED_BATCHES_DIR,
+        "output_dir": INTERPOLATED_BATCHES_DIR,
+        "model_dir": RIFE_MODEL_DIR,
+        "num_frame": FRAMES_MULTIPLY_FACTOR,
+        "time_step": TIME_STEP,
+        "display_name": "Интерполяция",
     },
 }
 
@@ -79,42 +96,61 @@ def _improve_batch(
 
     # Формируем команду в зависимости от типа обработки
     command = [ai_tool_path, "-i", str(input_dir), "-o", output_dir]
+    # Общие параметры для всех типов обработки
+    common_args = ("-f", OUTPUT_IMAGE_FORMAT, "-j", ai_threads)
 
-    if processing_type == ProcessingType.UPSCALE:
+    # Специфические параметры для каждого типа обработки
+    if processing_type == ProcessingType.DENOISE:
         command.extend(
             [
-                "-n",
-                config["model_name"],
-                "-s",
-                str(config["scale_factor"]),
-                "-f",
-                OUTPUT_IMAGE_FORMAT,
-                "-m",
-                config["model_dir"],
-                "-j",
-                ai_threads,
+                "-m", config["model_dir"],
+                "-n", str(config["denoise_factor"]),
+                "-s", str(config["scale_factor"]),
+                *common_args,
             ]
         )
-    elif processing_type == ProcessingType.DENOISE:
+    elif processing_type == ProcessingType.UPSCALE:
         command.extend(
             [
-                "-m",
-                config["model_dir"],
-                "-n",
-                str(config["denoise_factor"]),
-                "-s",
-                str(config["scale_factor"]),
-                "-f",
-                OUTPUT_IMAGE_FORMAT,
-                "-j",
-                ai_threads,
+                "-n", config["model_name"],
+                "-s", str(config["scale_factor"]),
+                "-m", config["model_dir"],
+                *common_args,
             ]
         )
+    elif processing_type == ProcessingType.INTERPOLATE:
+        command.extend(
+            [
+                "-m", config["model_dir"],
+                *common_args,
+            ]
+        )
+        if FRAMES_MULTIPLY_FACTOR > 2:
+            command.extend(
+                (
+                    "-n", str(config["num_frame"] * FRAMES_PER_BATCH),
+                    "-s", str(config["time_step"]),
+                )
+            )
+
+        # Добавляем флаги только для интерполяции
+        flags = []
+        if ENABLE_UHD_MODE:
+            flags.append("-u")
+        if ENABLE_SPATIAL_TTA_MODE:
+            flags.append("-x")
+        if ENABLE_TEMPORAL_TTA_MODE:
+            flags.append("-z")
+
+        command.extend(flags)
+
+    cmd_args = [str(arg) for arg in command]
+    logger.debug(" ".join(cmd_args))
 
     for attempt in range(max_retries):
         try:
             logger.debug(
-                f"Запуск {config['display_name'].lower()}а батча {batch_num} с параметрами: {ai_threads}. "
+                f"Запуск {config['display_name'].lower()} батча {batch_num} с параметрами: {ai_threads}. "
                 f"Попытка: {attempt + 1}/{max_retries}"
             )
             result = subprocess.run(command, capture_output=True, text=True)
@@ -160,8 +196,11 @@ async def monitor_progress(
     display_name = config["display_name"]
     output_dir = config["output_dir"]
 
+    if processing_type == ProcessingType.INTERPOLATE:
+        total_frames = total_frames * FRAMES_MULTIPLY_FACTOR
+
     last_logged = 0
-    log_interval = 10  # логировать каждые n секунд
+    log_interval = 20  # логировать каждые n секунд
 
     while is_processing[0]:
         try:
@@ -198,8 +237,9 @@ async def monitor_progress(
 
     total_time = time.time() - start_time
     logger.info(
-        f"{display_name} фреймов: {total_frames}/{total_frames} "
-        f"(100%) | Прошло: {total_time:.1f}сек"
+        f"{display_name} фреймов ({batch_numbers.start}-{batch_numbers.stop - 1}): "
+        f"{total_frames}/{total_frames} "
+        f"(100.0%) | Прошло: {total_time:.1f}сек | Осталось: 0.0сек"
     )
     logger.success(
         f"Обработка завершена. (Средняя скорость: {total_frames / total_time:.1f} FPS)"

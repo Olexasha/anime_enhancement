@@ -1,5 +1,5 @@
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
 
@@ -35,14 +35,26 @@ def get_fps_accurate(video_path: str) -> float:
 def form_frame_name(path_to_frame: str, num: int) -> str:
     """
     Формирует имя файла для указанного номера кадра в таком формате:
-        - frame_00000001.jpg
-        - frame_00000135.jpg
-        - frame_00052672.jpg
+        - frame_00000001.png
+        - frame_00000135.png
+        - frame_00052672.png
     :param path_to_frame: Путь к кадру.
     :param num: Номер кадра.
     :return: Имя файла.
     """
-    return os.path.join(path_to_frame, f"frame_{num:08d}.jpg")
+    return os.path.join(path_to_frame, f"frame_{num:08d}.{OUTPUT_IMAGE_FORMAT}")
+
+
+def save_frame(frame_path: str, frame) -> bool:
+    """Безопасная запись кадра на диск"""
+    try:
+        ok = cv2.imwrite(frame_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100])
+        if not ok:
+            logger.error(f"Ошибка сохранения кадра: {frame_path}")
+        return ok
+    except Exception as e:
+        logger.exception(f"Исключение при сохранении кадра {frame_path}: {e}")
+        return False
 
 
 def extract_frames_to_batches(
@@ -63,15 +75,16 @@ def extract_frames_to_batches(
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 256)
 
     logger.info(f"Начало извлечения {total_frames} кадров из видео")
-    logger.debug(f"Параметры: потоки={threads}, batch_size={batch_size}")
+    logger.debug(f"Параметры: threads={threads}, batch_size={batch_size}")
 
-    with ProcessPoolExecutor(max_workers=threads) as executor:
+    current_batch_dir = make_default_batch_dir(output_dir)
+    logger.debug(f"Создан первый батч: {current_batch_dir}")
+
+    processed_frames = 0
+    last_logged_percent = 0
+
+    with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = []
-        current_batch_dir = make_default_batch_dir(output_dir)
-        logger.debug(f"Создан первый батч: {current_batch_dir}")
-
-        processed_frames = 0
-        last_logged_percent = 0
 
         for frame_num in range(1, total_frames + 1):
             ret, frame = cap.read()
@@ -80,11 +93,7 @@ def extract_frames_to_batches(
                 break
 
             frame_path = form_frame_name(current_batch_dir, frame_num)
-            futures.append(
-                executor.submit(
-                    cv2.imwrite, frame_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 100]
-                )
-            )
+            futures.append(executor.submit(save_frame, frame_path, frame))
 
             if frame_num % batch_size == 0:
                 current_batch_dir = make_default_batch_dir(output_dir)

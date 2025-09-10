@@ -18,7 +18,7 @@ FINAL_VIDEO = os.path.join(
 BATCH_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "video_batches")
 INPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "default_frame_batches")
 LOGS_DIR = os.path.join(ROOT_DIR)
-OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "jpg")
+OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "png")
 
 # Файловые параметры апскейлера
 RESOLUTION = os.getenv("RESOLUTION", "4K")
@@ -34,14 +34,36 @@ UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 2))
 
 # Настройка денойза
 DENOISED_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "denoised_frame_batches")
-WAIFU2X_MODEL_DIR = os.path.join(
-    ROOT_DIR, "src", "utils", "waifu2x", "models", "models-cunet"
-)
 DENOISE_FACTOR = int(os.getenv("DENOISE_FACTOR", 3))
 WAIFU2X_UPSCALE_FACTOR = int(os.getenv("WAIFU2X_UPSCALE_FACTOR", 1))
+if WAIFU2X_UPSCALE_FACTOR > 1:
+    WAIFU2X_MODEL_DIR = os.path.join(
+        ROOT_DIR,
+        "src",
+        "utils",
+        "waifu2x",
+        "models",
+        "models-upconv_7_anime_style_art_rgb",
+    )
+else:
+    WAIFU2X_MODEL_DIR = os.path.join(
+        ROOT_DIR, "src", "utils", "waifu2x", "models", "models-cunet"
+    )
 
 # Настройка интерполяции
 INTERPOLATED_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "interpolated_frame_batches")
-RIFE_MODEL_DIR = os.path.join(ROOT_DIR, "src", "utils", "rife", "models", "rife-anime")
 FRAMES_MULTIPLY_FACTOR = int(os.getenv("FRAMES_MULTIPLY_FACTOR", 4))
-ENABLE_UHD_MODE = bool(os.getenv("ENABLE_UHD_MODE", True))
+TIME_STEP = round(1 / FRAMES_MULTIPLY_FACTOR, 2)
+if FRAMES_MULTIPLY_FACTOR > 2:
+    RIFE_MODEL_DIR = os.path.join(
+        ROOT_DIR, "src", "utils", "rife", "models", "rife-v4.6"
+    )
+else:
+    RIFE_MODEL_DIR = os.path.join(
+        ROOT_DIR, "src", "utils", "rife", "models", "rife-anime"
+    )
+ENABLE_UHD_MODE = os.getenv("ENABLE_UHD_MODE", True).lower() == "true"
+ENABLE_SPATIAL_TTA_MODE = os.getenv("ENABLE_SPATIAL_TTA_MODE", False).lower() == "true"
+ENABLE_TEMPORAL_TTA_MODE = (
+    os.getenv("ENABLE_TEMPORAL_TTA_MODE", False).lower() == "true"
+)
