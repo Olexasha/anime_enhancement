@@ -120,7 +120,7 @@ anime_enhancement/
 
 - [x] Add support for alternative upscaling models
 - [x] Add denoising neural network (e.g. waifu2x)
-- [ ] Add motion interpolation (e.g. RIFE)
+- [x] Add motion interpolation (e.g. RIFE)
 - [ ] Argparse CLI mode
 - [ ] Complete GUI interface
 - [ ] REST API for remote processing
