@@ -19,14 +19,12 @@ BATCH_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "video_batches")
 INPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "default_frame_batches")
 LOGS_DIR = os.path.join(ROOT_DIR)
 OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "png")
-
-# Файловые параметры апскейлера
-RESOLUTION = os.getenv("RESOLUTION", "4K")
-START_BATCH_TO_UPSCALE = int(os.getenv("START_BATCH_TO_UPSCALE", 1))
-END_BATCH_TO_UPSCALE = int(os.getenv("END_BATCH_TO_UPSCALE", 0))
+START_BATCH_TO_IMPROVE = int(os.getenv("START_BATCH_TO_UPSCALE", 1))
+END_BATCH_TO_IMPROVE = int(os.getenv("END_BATCH_TO_UPSCALE", 0))
 FRAMES_PER_BATCH = int(os.getenv("FRAMES_PER_BATCH", 1000))
 
 # Настройка апскейла
+RESOLUTION = os.getenv("RESOLUTION", "4K")
 UPSCALED_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "upscaled_frame_batches")
 REALESRGAN_MODEL_DIR = os.path.join(ROOT_DIR, "src", "utils", "realesrgan", "models")
 REALESRGAN_MODEL_NAME = os.getenv("REALESRGAN_MODEL_NAME", "realesr-animevideov3")

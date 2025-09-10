@@ -9,11 +9,11 @@ from src.audio.audio_handling import AudioHandler
 from src.config.comp_params import ComputerParams
 from src.config.settings import (
     BATCH_VIDEO_PATH,
-    END_BATCH_TO_UPSCALE,
+    END_BATCH_TO_IMPROVE,
     FINAL_VIDEO,
     INPUT_BATCHES_DIR,
     ORIGINAL_VIDEO,
-    START_BATCH_TO_UPSCALE,
+    START_BATCH_TO_IMPROVE,
     TMP_VIDEO_PATH,
 )
 from src.files.batch_utils import (
@@ -65,7 +65,7 @@ async def clean_up(audio: AudioHandler) -> None:
 
 def calculate_batches() -> int:
     """Вычисляет количество батчей для обработки."""
-    if END_BATCH_TO_UPSCALE == 0:
+    if END_BATCH_TO_IMPROVE == 0:
         batch_name_pattern = re.compile(r"batch_(\d+)")
         batch_count = len(
             [
@@ -78,9 +78,9 @@ def calculate_batches() -> int:
         return batch_count
 
     logger.debug(
-        f"Использовано фиксированное количество батчей: {END_BATCH_TO_UPSCALE}"
+        f"Использовано фиксированное количество батчей: {END_BATCH_TO_IMPROVE}"
     )
-    return END_BATCH_TO_UPSCALE
+    return END_BATCH_TO_IMPROVE
 
 
 async def process_batches(
@@ -197,7 +197,7 @@ async def main():
             ai_waifu2x_path,
             ai_realesrgan_path,
             ai_rife_path,
-            START_BATCH_TO_UPSCALE,
+            START_BATCH_TO_IMPROVE,
             end_batch_to_improve,
         )
         print_bottom("улучшенные короткие видео сгенерированы")
