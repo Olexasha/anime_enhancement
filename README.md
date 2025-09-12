@@ -1,23 +1,27 @@
-# 🎨 Anime Enhancement
+# 🎨 Anime Enhancement Suite
 
-**Cross-platform Python tool for anime video upscaling with neural networks.**  
-Enhances Full HD anime to 4K (or higher) using [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), while preserving original audio and optimizing for performance via **batching and multithreading**.
+**Cross-platform Python toolchain for high-quality anime video restoration using neural networks.**  
+Upscales, denoises, and interpolates anime videos — from old 360p/480p to sharp 4K+ — while preserving original audio and optimizing for performance via **batching, parallelism, and lightweight binaries**.
 
 <div align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-orange?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue" alt="Platform">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/Upscale-Real--ESRGAN-purple" alt="Upscale">
+  <img src="https://img.shields.io/badge/Denoise-Waifu2x-yellow" alt="Denoise">
+  <img src="https://img.shields.io/badge/Interpolation-RIFE-red" alt="Interpolation">
 </div>
 
 ---
 
-## 🔍 Overview
+## 🔍 What It Does
 
-- 📹 **Automatic video enhancement**: Input → extract frames → upscale → merge video/audio
-- 🔊 **Audio preservation**: Extracts, encodes, and merges audio back into final output
-- ⚡ **Optimized batching**: Processes frames in parallel using threading/multiprocessing
-- 🧠 **Anime-specialized upscaling model**: Uses pretrained Real-ESRGAN models (animevideo-v3)
-- 🖥️ **Runs anywhere**: Includes platform-specific binaries (Windows, Linux, macOS)
+- 🎨 **Upscaling**: Enhances frames with [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
+- 🧹 **Denoising**: Removes noise/artifacts with [waifu2x-ncnn-vulkan](https://github.com/nihui/waifu2x-ncnn-vulkan)
+- 🎞️ **Interpolation**: Smooths motion & increases FPS with [RIFE-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan)
+- 🔊 **Audio preservation**: Extracts, encodes, and syncs back audio tracks
+- ⚡ **Optimized performance**: Frame batching + threading/multiprocessing
+- 🖥️ **Cross-platform binaries included**: Works out-of-the-box on Windows, Linux, macOS
 
 ---
 
@@ -41,7 +45,7 @@ poetry install
 ### ▶️ Usage
 1. Place your video file in `data/input_video`;
 2. Set video filename in `src/config/settings.py` under `ORIGINAL_VIDEO`
-3. Optional: Edit `.env` or config variables (e.g. batch size, scale factor)
+3. (Optional) Edit `.env`or settings (batch size, scale factor, FPS, denoise strength)
 4. Run enhancement:
 ```bash
 python main.py
@@ -50,24 +54,31 @@ poetry run python main.py
 ```
 ---
 
-## 📦 Example
+## 📦 Example Workflow
 
-Given: `data/input_video/naruto_war.mp4`
+Input: `data/input_video/naruto_war.mp4`
+
+Pipeline:
+1. Extract audio
+2. Extract frames
+3. Apply **denoise** → **upscale** → **interpolation**
+4. Merge video parts
+5. Reattach synced audio
 
 Output:
-- Enhanced video at `data/output_video/naruto_war_enhanced.mp4`
-- Audio preserved and synced
+- `data/output_video/naruto_war_enhanced.mp4`
 
 ---
 
 ## 🧩 Features
 
-- 🔁 Frame batching to reduce memory load
-- 🧵 IO-bound multithreading for faster file ops
+- 🔁 Batch-based frame processing (low memory footprint)
+- 🧵 IO-bound multithreading + CPU/GPU parallelism
 - ⚙️ Custom Real-ESRGAN execution per OS
-- 🎛️ Configurable enhancement parameters (batch size, threads, model scale)
-- 💾 Temporary and output directory management
-- 📤 GUI and API interfaces under development
+- 🎛️ Configurable stages: enable/disable upscale, denoise, interpolation
+- ⚙️ Cross-OS binaries for ESRGAN, waifu2x, RIFE
+- 💾 Automatic cleanup of temp files
+- 📤 GUI and CLI (in progress)
 
 ---
 
@@ -79,13 +90,15 @@ Main settings:
 
 ---
 
-## 🧠 Technology Stack
+## 🧠 Tech Stack
 
 - Python 3.12+
-- [ffmpeg](https://ffmpeg.org/) for audio/video processing
-- `Real-ESRGAN` for frame enhancement (binaries included for 3 OSes)
-- `threading`, `multiprocessing`, `asyncio` for parallelism
-- `poetry` for dependency management
+- [ffmpeg](https://ffmpeg.org/) — audio/video I/O
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) — upscaling
+- [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan) — denoising
+- [RIFE](https://github.com/nihui/rife-ncnn-vulkan) — frame interpolation
+- `threading`, `multiprocessing`, `asyncio` — parallel execution
+- `poetry` — dependency management
 
 ---
 
@@ -140,11 +153,11 @@ poetry run pytest
 
 ## 💬 Contributing
 
-Want to improve anime upscaling tools? Help is welcome!
+Contributions welcome!
 
-- Fork the repo and create PRs
-- File issues or suggest features
-- Test on your platform and report bugs
+- Fork → PR
+- File issues & feature requests
+- Test across OSes & report bugs
 
 ---
 
@@ -156,5 +169,7 @@ MIT License — see [LICENSE](./LICENSE) file for full text.
 
 ## 🧠 Credits
 
+- [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan) by nihui
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) by Xintao
+- [RIFE](https://github.com/nihui/rife-ncnn-vulkan) by nihui
 - Inspired by anime remastering communities
