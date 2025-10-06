@@ -1,5 +1,6 @@
 import asyncio
 import glob
+import json
 import os
 import re
 from datetime import datetime
@@ -30,6 +31,32 @@ from src.frames.frames_helpers import extract_frames_to_batches, get_fps_accurat
 from src.frames.improve import ProcessingType, improve_batches
 from src.utils.logger import logger
 from src.video.video_handling import VideoHandler
+
+
+def load_gui_config() -> dict:
+    """Загружает конфигурацию из GUI override файла."""
+    gui_settings_path = os.getenv("GUI_SETTINGS")
+    if gui_settings_path and os.path.exists(gui_settings_path):
+        try:
+            with open(gui_settings_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Ошибка загрузки GUI конфигурации: {e}")
+    return {}
+
+
+def apply_gui_config(config: dict) -> None:
+    """Применяет конфигурацию из GUI к глобальным переменным."""
+    if not config:
+        return
+    
+    # Обновляем переменные в модуле settings
+    import src.config.settings as settings_module
+    
+    for key, value in config.items():
+        if hasattr(settings_module, key):
+            setattr(settings_module, key, value)
+            logger.debug(f"Применена настройка из GUI: {key} = {value}")
 
 
 def print_header(title: str) -> None:
@@ -168,6 +195,11 @@ async def main():
     print_header("запуск улучшения видео")
 
     try:
+        # Загружаем конфигурацию из GUI
+        gui_config = load_gui_config()
+        if gui_config:
+            apply_gui_config(gui_config)
+            logger.info("Загружена конфигурация из GUI")
         my_computer = ComputerParams()
         ai_realesrgan_path = my_computer.ai_realesrgan_path
         ai_waifu2x_path = my_computer.ai_waifu2x_path

@@ -1,0 +1,21 @@
+# Requirements for Anime Enhancement GUI
+# Install with: pip install -r requirements-gui.txt
+
+# Core GUI framework
+PySide6>=6.6.0,<6.10.0
+
+# System monitoring
+psutil>=5.9.0
+
+# JSON handling (built-in, but explicit for clarity)
+# json - built-in
+
+# File handling
+pathlib2>=2.3.7; python_version < "3.4"
+
+# Optional: GPU monitoring (if available)
+# pynvml>=11.5.0  # Uncomment if you want GPU monitoring
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# pytest-qt>=4.2.0
