@@ -1,5 +1,6 @@
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import cv2
 
@@ -121,15 +122,31 @@ def extract_frames_to_batches(
     logger.success(f"Успешно извлечено {total_frames} кадров")
 
 
-def count_frames_in_certain_batches(directory: str, batches_num_range: range) -> int:
+def count_frames_in_certain_batches(
+    directory: str,
+    batches_num_range: range = None,
+    just_one_batch: int = 0
+) -> int:
     """Считает общее количество фреймов в указанных батчах."""
     count = 0
     ext = f".{OUTPUT_IMAGE_FORMAT}"
-    for batch_num in batches_num_range:
-        batch_dir = os.path.join(directory, f"batch_{batch_num}")
-        if os.path.exists(batch_dir):
-            count += sum(
-                1 for entry in os.scandir(batch_dir) if entry.name.endswith(ext)
-            )
-    logger.debug(f"Количество кадров в батчах {batches_num_range}: {count}")
+
+    if just_one_batch:
+        target_batches = [just_one_batch]
+        log_message = f"Количество кадров в батче batch_{just_one_batch}: {{}}"
+    else:
+        target_batches = batches_num_range
+        log_message = f"Количество кадров в батчах {batches_num_range}: {{}}"
+
+    for batch_num in target_batches:
+        batch_dir = Path(directory) / f"batch_{batch_num}"
+        if not batch_dir.exists():
+            continue
+
+        count += sum(
+            1 for entry in os.scandir(batch_dir)
+            if entry.is_file() and entry.name.endswith(ext)
+        )
+
+    logger.debug(log_message.format(count))
     return count

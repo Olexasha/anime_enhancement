@@ -126,9 +126,13 @@ def _improve_batch(
             ]
         )
         if FRAMES_MULTIPLY_FACTOR > 2:
+            frames_in_batch = count_frames_in_certain_batches(
+                directory=UPSCALED_BATCHES_DIR,
+                just_one_batch=batch_num
+            )
             command.extend(
                 (
-                    "-n", str(config["num_frame"] * FRAMES_PER_BATCH),
+                    "-n", str(config["num_frame"] * frames_in_batch),
                     "-s", str(config["time_step"]),
                 )
             )
@@ -269,6 +273,9 @@ async def improve_batches(
     batches_range = range(start_batch, end_batch + 1)
     total_frames = count_frames_in_certain_batches(config["input_dir"], batches_range)
     is_processing = [True]
+
+    if start_batch == end_batch:
+        process_threads = 1
 
     logger.info(
         f"Начало {config['display_name'].lower()}`а батчей {start_batch}-{end_batch} "

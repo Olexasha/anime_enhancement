@@ -4,7 +4,6 @@ import glob
 import multiprocessing
 import os
 import time
-from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -39,7 +38,6 @@ class VideoHandler:
         self.final_videos_same_name = 1
 
     @staticmethod
-    @lru_cache(maxsize=10)
     def __calculate_fps_after_ai(fps: float) -> float:
         return fps * FRAMES_MULTIPLY_FACTOR
 
@@ -282,6 +280,10 @@ class VideoHandler:
                         f"Осталось: {remaining:.1f}сек"
                     )
             cap.release()
+            logger.info(
+                f"Склейка видео: {processed_frames}/{total_frames} (100.0%) | "
+                f"Осталось: 0.0сек"
+            )
             # Очищаем память после обработки каждого видео
             self._force_memory_cleanup()
 
