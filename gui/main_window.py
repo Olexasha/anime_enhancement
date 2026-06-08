@@ -18,7 +18,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QIcon, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -57,6 +57,7 @@ from src.config.runtime_paths import (
     is_frozen,
     logs_parent_dir,
     profiles_dir,
+    resource_path,
 )
 
 DETAIL_FIELDS = [
@@ -209,10 +210,16 @@ class MainWindow(QMainWindow):
         self.detail_widgets: dict[str, Any] = {}
 
         self.setWindowTitle("Anime Enhancement")
+        self._apply_window_icon()
         self.resize(1240, 820)
         self._build_ui()
         self._populate_from_config(self.config)
         self._append_log("info", "GUI готов к работе.")
+
+    def _apply_window_icon(self) -> None:
+        icon_path = resource_path("packaging/windows/assets/anime_enhancement.ico")
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
     def _build_ui(self) -> None:
         central = QWidget()

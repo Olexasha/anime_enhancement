@@ -11,6 +11,8 @@ def add_tree(source: Path, target: str):
         return []
     items = []
     for path in source.rglob("*"):
+        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
         if path.is_file():
             destination = Path(target) / path.relative_to(source).parent
             items.append((str(path), str(destination)))
