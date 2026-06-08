@@ -164,10 +164,11 @@ Windows, Linux и macOS используют разные форматы при�
 
 - `assets/branding/anime_enhancement_logo_1024.png`
 - `assets/branding/banner_1200x380.png`
+- `assets/branding/icon.png` — исходник иконки приложения/ярлыков.
 
 Windows assets:
 
-- `packaging/windows/assets/anime_enhancement.ico`
+- `packaging/windows/assets/anime_enhancement.ico` — Windows `.ico` для приложения, ярлыков и установщика.
 - `packaging/windows/assets/wizard-small.bmp`
 - `packaging/windows/assets/wizard-large.bmp`
 
