@@ -1,116 +1,84 @@
+from __future__ import annotations
+
+import os
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
 
-# Добавляем корневую директорию проекта в путь
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+from src.config.runtime_paths import app_root, resource_path
 
-from gui.main_window import MainWindow
-from gui.config import ConfigManager
+
+def configure_text_output() -> None:
+    """Нужен для frozen-режима, когда этот exe запускают как CLI с --config."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+configure_text_output()
+
+
+def resolve_project_root() -> Path:
+    return app_root()
+
+
+PROJECT_ROOT = resolve_project_root()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from gui.main_window import MainWindow  # noqa: E402
 
 
 def setup_application() -> QApplication:
-    """Настройка QApplication с современными параметрами."""
+    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     app = QApplication(sys.argv)
-    app.setApplicationName("Anime Enhancement GUI")
-    app.setApplicationVersion("1.0.0")
-    app.setOrganizationName("Olexasha")
-    
-    # Включаем поддержку HiDPI экранов
-    app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-    
+    app.setApplicationName("Anime Enhancement")
+    app.setApplicationVersion("2.0.0")
+    app.setOrganizationName("anime_enhancement")
+    try:
+        app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
+    except AttributeError:
+        pass
+
+    style_path = resource_path("gui/styles.qss")
+    if not style_path.exists():
+        style_path = Path(__file__).with_name("styles.qss")
+    if style_path.exists():
+        app.setStyleSheet(style_path.read_text(encoding="utf-8"))
     return app
 
 
-def check_dependencies() -> bool:
-    """Проверка наличия основных зависимостей и структуры проекта."""
-    try:
-        main_py_path = project_root / "main.py"
-        if not main_py_path.exists():
-            QMessageBox.critical(
-                None,
-                "Ошибка",
-                f"Файл main.py не найден в {project_root}.\n"
-                "Убедитесь, что GUI запускается из корневой директории проекта."
-            )
-            return False
-
-        settings_py_path = project_root / "src" / "config" / "settings.py"
-        if not settings_py_path.exists():
-            # Предлагаем пользователю выбрать settings.py вручную
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Critical)
-            msg.setWindowTitle("Ошибка")
-            msg.setText(f"Файл settings.py не найден в {settings_py_path}")
-            msg.setInformativeText("Хотите выбрать файл вручную?")
-            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            result = msg.exec()
-
-            if result == QMessageBox.Yes:
-                file_path, _ = QFileDialog.getOpenFileName(
-                    None,
-                    "Выберите settings.py",
-                    str(project_root),
-                    "Python Files (*.py)"
-                )
-                if not file_path:
-                    return False
-                return True
-            else:
-                return False
-
-        return True
-
-    except Exception as e:
-        QMessageBox.critical(
-            None,
-            "Ошибка",
-            f"Ошибка при проверке зависимостей:\n{str(e)}"
-        )
-        return False
-
-
 def main() -> int:
-    """Главная функция запуска GUI приложения."""
-    try:
-        # Создаем приложение
-        app = setup_application()
-        
-        # Проверяем зависимости
-        if not check_dependencies():
-            return 1
-        
-        # Инициализируем менеджер конфигурации
-        config_manager = ConfigManager(project_root)
-        
-        # Создаем и показываем главное окно
-        main_window = MainWindow(config_manager)
-        main_window.show()
-        
-        # Запускаем приложение
-        try:
-            return app.exec()
-        except Exception:
-            QMessageBox.critical(
-                None,
-                "Критическая ошибка",
-                "Произошла непредвиденная ошибка.\n"
-                "Подробности смотрите в лог-файле."
-            )
-            return 1
+    if any(
+        arg in sys.argv[1:]
+        for arg in (
+            "--config",
+            "--check-environment",
+            "--print-effective-config",
+            "--dry-run",
+        )
+    ):
+        from main import main as cli_main
 
-    except Exception as e:
+        return cli_main(sys.argv[1:])
+
+    app = setup_application()
+    try:
+        window = MainWindow(PROJECT_ROOT)
+        if "--smoke-test" in sys.argv:
+            window.close()
+            return 0
+        window.show()
+        return app.exec()
+    except Exception as error:
         QMessageBox.critical(
-            None,
-            "Критическая ошибка",
-            f"Не удалось запустить GUI:\n{str(e)}"
+            None, "Критическая ошибка", f"Не удалось запустить GUI:\n{error}"
         )
         return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
