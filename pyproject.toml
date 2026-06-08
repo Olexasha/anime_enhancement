@@ -1,60 +1,48 @@
 [tool.poetry]
 name = "anime_enhancement"
 version = "0.1.0"
-description = "Real-ESRGAN is a neural network-based super-resolution algorithm that can be used to enhance the quality of anime videos."
+description = "Улучшение аниме-видео через FFmpeg, RealESRGAN, waifu2x и RIFE."
 authors = ["Alexander Petrushishin <Olexasha@MrDarwin1859@yandex.ru>"]
 readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = ">=3.12.0,<3.14"
+python = ">=3.13.0,<3.14"
 numpy = "^2.2.6"
 imageio = "^2.37.0"
 python-dotenv = "^1.1.1"
 opencv-python = "^4.12.0.88"
 psutil = "^7.0.0"
-logging = "==0.4.9.6"
 pytest = "^8.4.2"
 pytest-asyncio = "^1.1.0"
 pyside6 = "^6.9.2"
 
 [tool.poetry.group.dev.dependencies]
-black = "^22.6.0"
-autoflake = "^2.2.0"
 pre-commit = "^2.7.1"
-isort = "^5.5.4"
-flake8 = "*"
+pyinstaller = "^6.17.0"
+ruff = "^0.14.9"
 
-[tool.autoflake]
-remove-all-unused-imports = true
-ignore-init-module-imports = true
-in-place = true
-recursive = true
-quiet = true
-
-[tool.flake8]
-extend-ignore = "E501"
-exclude = [".venv/*"]
-
-[tool.black]
+[tool.ruff]
 line-length = 88
-target-version = ['py38']
-force-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | .*\.json
-  | .*\.pyc
-)/
-'''
+target-version = "py313"
+exclude = [".git", ".venv", "venv", "build", "dist", "data"]
 
-[tool.isort]
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-line_length = 88
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+norecursedirs = [".git", ".venv", "venv", "env", ".idea"]
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
