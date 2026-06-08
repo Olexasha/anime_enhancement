@@ -1,7 +1,0 @@
-{
-  "WAIFU2X_TTA": false,
-  "REALESRGAN_TTA": false,
-  "RIFE_LOAD_THREADS": 2,
-  "RIFE_PROC_THREADS": 4,
-  "RIFE_SAVE_THREADS": 2
-}
