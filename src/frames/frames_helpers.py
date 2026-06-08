@@ -123,9 +123,7 @@ def extract_frames_to_batches(
 
 
 def count_frames_in_certain_batches(
-    directory: str,
-    batches_num_range: range = None,
-    just_one_batch: int = 0
+    directory: str, batches_num_range: range = None, just_one_batch: int = 0
 ) -> int:
     """Считает общее количество фреймов в указанных батчах."""
     count = 0
@@ -144,7 +142,8 @@ def count_frames_in_certain_batches(
             continue
 
         count += sum(
-            1 for entry in os.scandir(batch_dir)
+            1
+            for entry in os.scandir(batch_dir)
             if entry.is_file() and entry.name.endswith(ext)
         )
 

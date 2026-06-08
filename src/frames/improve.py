@@ -9,11 +9,11 @@ from typing import Any, Dict
 from src.config.settings import (
     DENOISE_FACTOR,
     DENOISED_BATCHES_DIR,
+    ENABLE_DENOISE,
     ENABLE_SPATIAL_TTA_MODE,
     ENABLE_TEMPORAL_TTA_MODE,
     ENABLE_UHD_MODE,
     FRAMES_MULTIPLY_FACTOR,
-    FRAMES_PER_BATCH,
     INPUT_BATCHES_DIR,
     INTERPOLATED_BATCHES_DIR,
     OUTPUT_IMAGE_FORMAT,
@@ -53,7 +53,7 @@ PROCESSING_CONFIG: Dict[ProcessingType, Dict[str, Any]] = {
         "display_name": "Денойз",
     },
     ProcessingType.UPSCALE: {
-        "input_dir": DENOISED_BATCHES_DIR,
+        "input_dir": DENOISED_BATCHES_DIR if ENABLE_DENOISE else INPUT_BATCHES_DIR,
         "output_dir": UPSCALED_BATCHES_DIR,
         "model_dir": REALESRGAN_MODEL_DIR,
         "model_name": REALESRGAN_MODEL_NAME,
@@ -103,37 +103,45 @@ def _improve_batch(
     if processing_type == ProcessingType.DENOISE:
         command.extend(
             [
-                "-m", config["model_dir"],
-                "-n", str(config["denoise_factor"]),
-                "-s", str(config["scale_factor"]),
+                "-m",
+                config["model_dir"],
+                "-n",
+                str(config["denoise_factor"]),
+                "-s",
+                str(config["scale_factor"]),
                 *common_args,
             ]
         )
     elif processing_type == ProcessingType.UPSCALE:
         command.extend(
             [
-                "-n", config["model_name"],
-                "-s", str(config["scale_factor"]),
-                "-m", config["model_dir"],
+                "-n",
+                config["model_name"],
+                "-s",
+                str(config["scale_factor"]),
+                "-m",
+                config["model_dir"],
                 *common_args,
             ]
         )
     elif processing_type == ProcessingType.INTERPOLATE:
         command.extend(
             [
-                "-m", config["model_dir"],
+                "-m",
+                config["model_dir"],
                 *common_args,
             ]
         )
         if FRAMES_MULTIPLY_FACTOR > 2:
             frames_in_batch = count_frames_in_certain_batches(
-                directory=UPSCALED_BATCHES_DIR,
-                just_one_batch=batch_num
+                directory=UPSCALED_BATCHES_DIR, just_one_batch=batch_num
             )
             command.extend(
                 (
-                    "-n", str(config["num_frame"] * frames_in_batch),
-                    "-s", str(config["time_step"]),
+                    "-n",
+                    str(config["num_frame"] * frames_in_batch),
+                    "-s",
+                    str(config["time_step"]),
                 )
             )
 
@@ -236,7 +244,7 @@ async def monitor_progress(
                 break
             await asyncio.sleep(log_interval)
         except Exception as error:
-            logger.error(f"Error monitoring progress: {str(error)}")
+            logger.error(f"Ошибка мониторинга прогресса: {str(error)}")
             await asyncio.sleep(1)
 
     total_time = time.time() - start_time

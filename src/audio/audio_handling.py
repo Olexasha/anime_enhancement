@@ -33,7 +33,7 @@ class AudioHandler:
         merged_video_path: str = TMP_VIDEO_PATH,
         output_video_path: str = FINAL_VIDEO,
         audio_path: str = AUDIO_PATH,
-        audio_format: str = "mp3",
+        audio_format: str = "copy",
         resolution: str = RESOLUTION,
     ):
         self.threads = threads
@@ -43,7 +43,14 @@ class AudioHandler:
         self.audio_path = audio_path
         self.audio_format = audio_format
         self.resolution = resolution
-        self.codec = "libmp3lame" if self.audio_format == "mp3" else self.audio_format
+        self.copy_original_audio = self.audio_format == "copy"
+        self.codec = (
+            "copy"
+            if self.copy_original_audio
+            else "libmp3lame"
+            if self.audio_format == "mp3"
+            else self.audio_format
+        )
 
         logger.info(
             "Инициализация AudioHandler с параметрами:"
@@ -58,15 +65,33 @@ class AudioHandler:
         """
         Извлекает аудио из видеофайла и сохраняет его как отдельный аудиофайл.
         """
+        if self.copy_original_audio:
+            logger.info(
+                "Извлечение аудио пропущено: финальная сборка скопирует аудио из оригинала"
+            )
+            return self.in_video_path
+
         audio_file = self.get_audio_full_path()
         logger.debug(f"Извлечение аудио из {self.in_video_path} в {audio_file}")
 
         ffmpeg_args = [
-            "-y", "-i", self.in_video_path,
-            "-vn", "-acodec", self.codec,
-            "-ar", self.SAMPLE_FREQ, "-ac", self.CANALS,
-            "-b:a", self.BITRATE, "-threads", str(self.threads),
-            "-loglevel", "error", audio_file,
+            "-y",
+            "-i",
+            self.in_video_path,
+            "-vn",
+            "-acodec",
+            self.codec,
+            "-ar",
+            self.SAMPLE_FREQ,
+            "-ac",
+            self.CANALS,
+            "-b:a",
+            self.BITRATE,
+            "-threads",
+            str(self.threads),
+            "-loglevel",
+            "error",
+            audio_file,
         ]
         try:
             result = subprocess.run(
@@ -88,6 +113,12 @@ class AudioHandler:
 
     async def extract_audio(self) -> Optional[str]:
         """Асинхронный запуск извлечения аудио"""
+        if self.copy_original_audio:
+            logger.info(
+                "Извлечение аудио пропущено: финальная сборка скопирует аудио из оригинала"
+            )
+            return self.in_video_path
+
         logger.debug("Запуск асинхронного извлечения аудио")
         loop = asyncio.get_running_loop()
         with ProcessPoolExecutor() as pool:
@@ -98,30 +129,27 @@ class AudioHandler:
         Добавляет аудиофайл в видео, сохраняя оригинальное качество видео и аудио.
         """
         duration, fps = get_video_duration(self.tmp_video_path, return_fps_too=True)
-        audio_file = self.get_audio_full_path()
+        audio_input = (
+            self.in_video_path
+            if self.copy_original_audio
+            else self.get_audio_full_path()
+        )
 
         logger.info(
             "Добавление аудио к видео:"
             "\n\tКодек видео: copy"
-            f"\n\tКодек аудио: copy ({self.audio_format})"
+            f"\n\tКодек аудио: copy ({'оригинал' if self.copy_original_audio else self.audio_format})"
             f"\n\tДлительность видео: {duration:.2f} сек"
             f"\n\tFPS видео: {fps}"
             f"\n\tПотоков: {self.threads}"
             f"\n\tРазрешение: {self.resolution}"
         )
 
-        cmd = [
-            "ffmpeg", "-y", "-i", self.tmp_video_path,
-            "-i", audio_file,
-            "-c:v", "copy",
-            "-c:a", "copy",
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-shortest", "-progress", "-",
-            "-threads", str(self.threads),
-            "-nostats", "-loglevel", "error",
-            self.out_video_path,
-        ]
+        # fmt: off
+        cmd = ["ffmpeg", "-y", "-i", self.tmp_video_path, "-i", audio_input]
+        cmd += ["-c:v", "copy", "-c:a", "copy", "-map", "0:v:0", "-map", "1:a:0"]
+        cmd += ["-shortest", "-progress", "-", "-threads", str(self.threads), "-nostats", "-loglevel", "error", self.out_video_path]
+        # fmt: on
         try:
             run_ffmpeg_command_with_progress(
                 cmd, duration, desc="Импортирование аудиоряда в видео", unit="сек"
@@ -131,7 +159,8 @@ class AudioHandler:
             raise
 
         # очистка временных файлов
-        await delete_file(audio_file)
+        if not self.copy_original_audio:
+            await delete_file(audio_input)
         await delete_file(self.tmp_video_path)
         logger.debug("Временные файлы удалены")
 
@@ -144,6 +173,11 @@ class AudioHandler:
 
     async def delete_audio_if_exists(self, audio_path: str = None) -> None:
         """Удаляет аудиофайл, если он существует"""
+        if self.copy_original_audio:
+            logger.debug(
+                "Удаление аудиофайла пропущено: используется оригинальный аудиопоток"
+            )
+            return
         if audio_path is None:
             audio_path = self.get_audio_full_path()
         if os.path.exists(audio_path):

@@ -1,34 +1,68 @@
 import os
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+
+    def load_dotenv(verbose: bool = False) -> bool:
+        """Пропускает загрузку .env, если python-dotenv сломался"""
+        return False
+
 
 load_dotenv(verbose=True)
 ROOT_DIR = os.getcwd()
 
-# Пути к файлам
-ORIGINAL_VIDEO = os.path.join(ROOT_DIR, "data", "input_video", "naruto_test2.mkv")
+ORIGINAL_VIDEO = os.getenv(
+    "ORIGINAL_VIDEO",
+    os.path.join(
+        "D:\\",
+        "Anime",
+        "Naruto - Перерождение",
+        "Глава 13",
+        "Эпизод 1 - Возвращение.mp4",
+    ),
+)
+FINAL_VIDEO = os.getenv(
+    "FINAL_VIDEO",
+    os.path.join(
+        "D:\\",
+        "Anime",
+        "Naruto - Перерождение",
+        "Глава 13",
+        f"{os.path.splitext(os.path.basename(ORIGINAL_VIDEO))[0]}_enhanced.mp4",
+    ),
+)
+
 AUDIO_PATH = os.path.join(ROOT_DIR, "data", "audio")
 TMP_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "tmp_video")
-FINAL_VIDEO = os.path.join(
-    ROOT_DIR,
-    "data",
-    "output_video",
-    f"{os.path.splitext(os.path.basename(ORIGINAL_VIDEO))[0]}_enhanced.mp4",
-)
+
 BATCH_VIDEO_PATH = os.path.join(ROOT_DIR, "data", "video_batches")
 INPUT_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "default_frame_batches")
 LOGS_DIR = os.path.join(ROOT_DIR)
 OUTPUT_IMAGE_FORMAT = os.getenv("OUTPUT_IMAGE_FORMAT", "png")
-START_BATCH_TO_IMPROVE = int(os.getenv("START_BATCH_TO_UPSCALE", 1))
-END_BATCH_TO_IMPROVE = int(os.getenv("END_BATCH_TO_UPSCALE", 0))
+START_BATCH_TO_IMPROVE = int(
+    os.getenv("START_BATCH_TO_IMPROVE", os.getenv("START_BATCH_TO_UPSCALE", 1))
+)
+END_BATCH_TO_IMPROVE = int(
+    os.getenv("END_BATCH_TO_IMPROVE", os.getenv("END_BATCH_TO_UPSCALE", 0))
+)
 FRAMES_PER_BATCH = int(os.getenv("FRAMES_PER_BATCH", 1000))
+ENABLE_DENOISE = os.getenv("ENABLE_DENOISE", "false").lower() == "true"
+ENABLE_INTERPOLATION = os.getenv("ENABLE_INTERPOLATION", "true").lower() == "true"
 
 # Настройка апскейла
 RESOLUTION = os.getenv("RESOLUTION", "4K")
 UPSCALED_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "upscaled_frame_batches")
 REALESRGAN_MODEL_DIR = os.path.join(ROOT_DIR, "src", "utils", "realesrgan", "models")
 REALESRGAN_MODEL_NAME = os.getenv("REALESRGAN_MODEL_NAME", "realesr-animevideov3")
-UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 2))
+UPSCALE_FACTOR = int(os.getenv("UPSCALE_FACTOR", 3))
+
+# Настройка кодирования видео
+VIDEO_ENCODER = os.getenv("VIDEO_ENCODER", "libx264").lower()
+VIDEO_CRF = int(os.getenv("VIDEO_CRF", 16))
+VIDEO_PRESET = os.getenv("VIDEO_PRESET", "slow")
+VIDEO_NVENC_CQ = int(os.getenv("VIDEO_NVENC_CQ", 16))
+VIDEO_PIX_FMT = os.getenv("VIDEO_PIX_FMT", "yuv420p")
 
 # Настройка денойза
 DENOISED_BATCHES_DIR = os.path.join(ROOT_DIR, "data", "denoised_frame_batches")

@@ -9,6 +9,8 @@ from src.audio.audio_handling import AudioHandler
 from src.config.comp_params import ComputerParams
 from src.config.settings import (
     BATCH_VIDEO_PATH,
+    ENABLE_DENOISE,
+    ENABLE_INTERPOLATION,
     END_BATCH_TO_IMPROVE,
     FINAL_VIDEO,
     INPUT_BATCHES_DIR,
@@ -99,17 +101,20 @@ async def process_batches(
         end_batch = min(start_batch + threads - 1, end_batch_to_improve)
         logger.info(f"Обработка батчей с {start_batch} по {end_batch}")
 
-        # --- Денойз ---
-        await improve_batches(
-            ProcessingType.DENOISE,
-            threads,
-            ai_threads,
-            ai_waifu2x_path,
-            start_batch,
-            end_batch,
-        )
-        await delete_default_batches(start_batch, end_batch)
-        logger.success(f"Батчи {start_batch}-{end_batch} успешно денойзены")
+        if ENABLE_DENOISE:
+            # --- Денойз ---
+            await improve_batches(
+                ProcessingType.DENOISE,
+                threads,
+                ai_threads,
+                ai_waifu2x_path,
+                start_batch,
+                end_batch,
+            )
+            await delete_default_batches(start_batch, end_batch)
+            logger.success(f"Батчи {start_batch}-{end_batch} успешно денойзены")
+        else:
+            logger.info("Денойз отключен: исходные PNG-кадры идут напрямую в апскейл")
 
         # --- Апскейл ---
         await improve_batches(
@@ -120,29 +125,37 @@ async def process_batches(
             start_batch,
             end_batch,
         )
-        await delete_denoise_batches(start_batch, end_batch)
+        if ENABLE_DENOISE:
+            await delete_denoise_batches(start_batch, end_batch)
+        else:
+            await delete_default_batches(start_batch, end_batch)
         logger.success(f"Батчи {start_batch}-{end_batch} успешно апскейлены")
 
-        # --- Интерполяция ---
-        interpolate_threads = max(1, threads // 3)
-        batch_nums = list(range(start_batch, end_batch + 1))
+        if ENABLE_INTERPOLATION:
+            # --- Интерполяция ---
+            interpolate_threads = max(1, threads // 3)
+            batch_nums = list(range(start_batch, end_batch + 1))
 
-        for i in range(0, len(batch_nums), interpolate_threads):
-            batches = batch_nums[i : i + interpolate_threads]
+            for i in range(0, len(batch_nums), interpolate_threads):
+                batches = batch_nums[i : i + interpolate_threads]
+                logger.info(
+                    f"Интерполяция батчей {batches} ({interpolate_threads} процессов)"
+                )
+
+                await improve_batches(
+                    ProcessingType.INTERPOLATE,
+                    interpolate_threads,
+                    ai_threads,
+                    ai_rife_path,
+                    batches[0],
+                    batches[-1],
+                )
+                await delete_upscale_batches(batches[0], batches[-1])
+            logger.success(f"Батчи {start_batch}-{end_batch} успешно интерполированы")
+        else:
             logger.info(
-                f"Интерполяция батчей {batches} ({interpolate_threads} процессов)"
+                "Интерполяция отключена: видео собирается из апскейленных кадров"
             )
-
-            await improve_batches(
-                ProcessingType.INTERPOLATE,
-                interpolate_threads,
-                ai_threads,
-                ai_rife_path,
-                batches[0],
-                batches[-1],
-            )
-            await delete_upscale_batches(batches[0], batches[-1])
-        logger.success(f"Батчи {start_batch}-{end_batch} успешно интерполированы")
 
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
         video.build_short_video(batches_to_perform)

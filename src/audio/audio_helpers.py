@@ -52,9 +52,7 @@ def run_ffmpeg_command_with_progress(
         if process.returncode != 0:
             logger.error(f"FFmpeg завершился с ошибкой (код: {process.returncode})")
             raise subprocess.CalledProcessError(process.returncode, cmd)
-        logger.info(
-            f"{desc}: {duration:.1f}/{duration:.1f}{unit} (100.0%)"
-        )
+        logger.info(f"{desc}: {duration:.1f}/{duration:.1f}{unit} (100.0%)")
     except Exception as e:
         logger.error(f"Ошибка при выполнении FFmpeg: {str(e)}")
         raise
