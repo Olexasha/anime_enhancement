@@ -25,6 +25,7 @@ def reload_project_modules(*module_names: str):
 def configure_test_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Изолирует файловые настройки проекта внутри временной директории pytest."""
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANIME_ENHANCEMENT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("ORIGINAL_VIDEO", str(tmp_path / "original.mp4"))
     monkeypatch.setenv("FINAL_VIDEO", str(tmp_path / "final.mp4"))
     monkeypatch.setenv("OUTPUT_IMAGE_FORMAT", "png")

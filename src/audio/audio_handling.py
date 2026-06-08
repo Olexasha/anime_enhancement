@@ -2,7 +2,6 @@ import asyncio
 import os
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional
 
 from src.audio.audio_helpers import run_ffmpeg_command_with_progress
 from src.config.settings import (
@@ -61,7 +60,7 @@ class AudioHandler:
             f"\n\tПотоки: {self.threads}"
         )
 
-    def extract_audio_sync(self) -> Optional[str]:
+    def extract_audio_sync(self) -> str | None:
         """
         Извлекает аудио из видеофайла и сохраняет его как отдельный аудиофайл.
         """
@@ -96,8 +95,7 @@ class AudioHandler:
         try:
             result = subprocess.run(
                 ["ffmpeg", *ffmpeg_args],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             if result.returncode != 0:
@@ -109,9 +107,9 @@ class AudioHandler:
             logger.success(f"Аудио успешно извлечено {audio_file}")
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка извлечения аудио: {e.stderr.decode()}")
-            raise RuntimeError(f"Ошибка извлечения аудио: {e.stderr.decode()}")
+            raise RuntimeError(f"Ошибка извлечения аудио: {e.stderr.decode()}") from e
 
-    async def extract_audio(self) -> Optional[str]:
+    async def extract_audio(self) -> str | None:
         """Асинхронный запуск извлечения аудио"""
         if self.copy_original_audio:
             logger.info(

@@ -162,3 +162,36 @@ cython_debug/
 
 # Локальное окружение для снятого с основного пайплайна AniSD
 .venv_anisd/
+
+# anime_enhancement local/runtime artifacts
+.venv/
+venv/
+build/
+dist/
+release/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# временные кадры, видео и результаты обработки; .gitkeep остаются в репозитории
+data/**/*.mp4
+data/**/*.mkv
+data/**/*.avi
+data/**/*.mov
+data/**/*.webm
+data/**/*.png
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.webp
+data/**/*.wav
+data/**/*.mp3
+data/**/*.aac
+data/**/*.m4a
+!data/**/.gitkeep
+
+# поддерживаемые вручную packaging/spec файлы должны попадать в git
+!assets/branding/
+!assets/branding/**
+!packaging/
+!packaging/**
+!packaging/pyinstaller/*.spec

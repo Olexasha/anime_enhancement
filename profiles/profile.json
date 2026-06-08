@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "settings": {
+    "ORIGINAL_VIDEO": "data/input_video/input.mp4",
+    "FINAL_VIDEO": "data/output_video/enhanced.mp4",
+    "RESOLUTION": "4K",
+    "START_BATCH_TO_IMPROVE": 1,
+    "END_BATCH_TO_IMPROVE": 0,
+    "FRAMES_PER_BATCH": 1000,
+    "OUTPUT_IMAGE_FORMAT": "png",
+    "ENABLE_DENOISE": false,
+    "ENABLE_INTERPOLATION": true,
+    "REALESRGAN_MODEL_NAME": "realesr-animevideov3",
+    "UPSCALE_FACTOR": 3,
+    "DENOISE_FACTOR": 3,
+    "WAIFU2X_UPSCALE_FACTOR": 1,
+    "VIDEO_ENCODER": "libx264",
+    "VIDEO_CRF": 16,
+    "VIDEO_PRESET": "slow",
+    "VIDEO_NVENC_CQ": 16,
+    "VIDEO_PIX_FMT": "yuv420p",
+    "FRAMES_MULTIPLY_FACTOR": 3,
+    "ENABLE_UHD_MODE": true,
+    "ENABLE_SPATIAL_TTA_MODE": false,
+    "ENABLE_TEMPORAL_TTA_MODE": false,
+    "KEEP_TEMP_FILES": false,
+    "LOG_LEVEL": "INFO"
+  }
+}

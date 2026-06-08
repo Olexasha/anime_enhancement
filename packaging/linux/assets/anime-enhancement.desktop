@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Anime Enhancement
+Comment=Улучшение аниме-видео через FFmpeg, RealESRGAN, waifu2x и RIFE
+Exec=AnimeEnhancement
+Icon=anime_enhancement
+Terminal=false
+Categories=AudioVideo;Video;Qt;
+StartupWMClass=AnimeEnhancement

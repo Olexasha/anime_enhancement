@@ -1,175 +1,225 @@
-# 🎨 Anime Enhancement Suite
+# Anime Enhancement
 
-**Cross-platform Python toolchain for high-quality anime video restoration using neural networks.**  
-Upscales, denoises, and interpolates anime videos — from old 360p/480p to sharp 4K+ — while preserving original audio and optimizing for performance via **batching, parallelism, and lightweight binaries**.
+Anime Enhancement — desktop/CLI-приложение для улучшения старого аниме-видео, в первую очередь Naruto. Пайплайн извлекает кадры, запускает AI-утилиты для denoise/upscale/interpolation, собирает видео обратно и копирует аудио из оригинала.
 
-<div align="center">
-  <img src="https://img.shields.io/badge/Python-3.12+-orange?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue" alt="Platform">
-  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/Upscale-Real--ESRGAN-purple" alt="Upscale">
-  <img src="https://img.shields.io/badge/Denoise-Waifu2x-yellow" alt="Denoise">
-  <img src="https://img.shields.io/badge/Interpolation-RIFE-red" alt="Interpolation">
-</div>
+## Возможности
 
----
+- Извлечение кадров через FFmpeg.
+- Опциональный denoise через waifu2x-ncnn-vulkan.
+- Апскейл через RealESRGAN-ncnn-vulkan.
+- Интерполяция кадров через RIFE-ncnn-vulkan.
+- Сборка промежуточных и финальных видео через FFmpeg.
+- Копирование аудиодорожки из оригинала без обязательного перекодирования.
+- GUI на PySide6 и CLI используют один пайплайн и JSON-профили.
 
-## 🔍 What It Does
+## Поддержка платформ
 
-- 🎨 **Upscaling**: Enhances frames with [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
-- 🧹 **Denoising**: Removes noise/artifacts with [waifu2x-ncnn-vulkan](https://github.com/nihui/waifu2x-ncnn-vulkan)
-- 🎞️ **Interpolation**: Smooths motion & increases FPS with [RIFE-ncnn-vulkan](https://github.com/nihui/rife-ncnn-vulkan)
-- 🔊 **Audio preservation**: Extracts, encodes, and syncs back audio tracks
-- ⚡ **Optimized performance**: Frame batching + threading/multiprocessing
-- 🖥️ **Cross-platform binaries included**: Works out-of-the-box on Windows, Linux, macOS
+- Windows: основная поддерживаемая релизная платформа. Готовится PyInstaller one-folder build и Inno Setup installer.
+- Linux: experimental portable-сборка. Работает только при наличии Linux binaries для RealESRGAN/waifu2x/RIFE и установленного или bundled FFmpeg.
+- macOS: experimental `.app` skeleton. Работает только при наличии macOS binaries для RealESRGAN/waifu2x/RIFE и установленного или bundled FFmpeg.
 
----
+Каждая ОС собирается на своей ОС. Не пытайтесь собрать полноценный Windows `.exe` на Linux или macOS `.app` на Windows.
 
+## Для обычного пользователя
 
-## 🚀 Quick Start
+### Windows
 
-### ✅ Requirements
+1. Откройте GitHub Releases.
+2. Скачайте `AnimeEnhancementSetup.exe`.
+3. Запустите installer и откройте Anime Enhancement из меню Пуск или ярлыка.
 
-- Python **3.12+**
-- `ffmpeg` installed and available in system `PATH`
-- Basic dependencies managed by `poetry`
+Пользовательский installer не требует ручной установки Python, Poetry, `.venv` или Python-зависимостей.
 
-### 🧪 Installation
+### Linux
+
+1. Скачайте `AnimeEnhancement-Linux.tar.gz` из GitHub Releases.
+2. Распакуйте архив.
+3. Запустите binary:
 
 ```bash
-git clone https://github.com/Olexasha/anime_enhancement.git
-cd anime_enhancement
-poetry install
+./AnimeEnhancement
 ```
 
-### ▶️ Usage
-1. Place your video file in `data/input_video`;
-2. Set video filename in `src/config/settings.py` under `ORIGINAL_VIDEO`
-3. (Optional) Edit `.env`or settings (batch size, scale factor, FPS, denoise strength)
-4. Run enhancement:
+Если FFmpeg не включен в portable-сборку, установите его через пакетный менеджер, например:
+
+```bash
+sudo apt install ffmpeg
+```
+
+### macOS
+
+1. Скачайте `AnimeEnhancement-macOS.zip` или будущий `.dmg` из GitHub Releases.
+2. Распакуйте архив.
+3. Откройте `AnimeEnhancement.app`.
+
+Если FFmpeg не включен в bundle, установите его через Homebrew:
+
+```bash
+brew install ffmpeg
+```
+
+## Для разработчика
+
+Основное dev-окружение единое: Python 3.13.2 + Poetry.
+
+### Windows bootstrap
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+```
+
+### Linux/macOS bootstrap
+
+```bash
+chmod +x install.sh run_gui.sh
+./install.sh
+```
+
+`install.ps1` и `install.sh` — dev/bootstrap-скрипты для запуска из исходников. Это не пользовательские installer-ы и их не нужно предлагать обычному пользователю вместо GitHub Release артефактов.
+
+### CLI запуск из исходников
+
 ```bash
 python main.py
-# or if inside poetry environment:
-poetry run python main.py
+python main.py --config profiles/profile.json
+python main.py --check-environment
 ```
----
 
-## 📦 Example Workflow
-
-Input: `data/input_video/naruto_war.mp4`
-
-Pipeline:
-1. Extract audio
-2. Extract frames
-3. Apply **denoise** → **upscale** → **interpolation**
-4. Merge video parts
-5. Reattach synced audio
-
-Output:
-- `data/output_video/naruto_war_enhanced.mp4`
-
----
-
-## 🧩 Features
-
-- 🔁 Batch-based frame processing (low memory footprint)
-- 🧵 IO-bound multithreading + CPU/GPU parallelism
-- ⚙️ Custom Real-ESRGAN execution per OS
-- 🎛️ Configurable stages: enable/disable upscale, denoise, interpolation
-- ⚙️ Cross-OS binaries for ESRGAN, waifu2x, RIFE
-- 💾 Automatic cleanup of temp files
-- 📤 GUI and CLI (in progress)
-
----
-
-## ⚙️ Configuration
-
-Main settings:
-- `src/config/settings.py` — core parameters (video name, batch size, scale factor, etc.)
-- `.env` — for optional overrides and system-level customization
-
----
-
-## 🧠 Tech Stack
-
-- Python 3.12+
-- [ffmpeg](https://ffmpeg.org/) — audio/video I/O
-- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN-ncnn-vulkan) — upscaling
-- [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan) — denoising
-- [RIFE](https://github.com/nihui/rife-ncnn-vulkan) — frame interpolation
-- `threading`, `multiprocessing`, `asyncio` — parallel execution
-- `poetry` — dependency management
-
----
-
-## 🖼 Directory Structure
-
-```
-anime_enhancement/
-├── data/
-│   ├── input_video/              # Input video files
-│   ├── output_video/             # Final enhanced videos
-│   ├── audio/                    # Extracted audio files
-│   ├── tmp_video/                # Temporary merging outputs
-│   ├── default_frame_batches/    # Extracted frames
-│   ├── upscaled_frame_batches/   # Enhanced frames
-│   └── video_batches/            # Reconstructed video parts
-├── src/
-│   ├── audio/                    # Audio extraction/merging logic
-│   ├── config/                   # Settings and constants
-│   ├── files/                    # File management utilities
-│   ├── frames/                   # Frame extraction and enhancement
-│   ├── video/                    # Video processing logic
-│   ├── utils/                    # Logging and Real-ESRGAN binaries
-│   ├── interfaces/               # GUI and API (under development)
-│   └── tests/                    # Pytest config (tests TBD)
-├── pyproject.toml                # Poetry dependencies
-├── main.py                       # Entry point
-└── .env                          # Optional environment variables
-```
----
-
-## 📋 Future Roadmap
-
-- [x] Add support for alternative upscaling models
-- [x] Add denoising neural network (e.g. waifu2x)
-- [x] Add motion interpolation (e.g. RIFE)
-- [ ] Argparse CLI mode
-- [ ] Complete GUI interface
-- [ ] REST API for remote processing
-- [ ] Upload to HuggingFace or PyPI
-
----
-
-## 🧪 Testing
-
-Planned to use `pytest`. Config file exists under `src/tests/pytest.ini`  
-Run tests (once added) with:
+### GUI запуск из исходников
 
 ```bash
-poetry run pytest
+python -m gui.app
 ```
----
 
-## 💬 Contributing
+или через dev helper:
 
-Contributions welcome!
+```bash
+./run_gui.sh
+```
 
-- Fork → PR
-- File issues & feature requests
-- Test across OSes & report bugs
+## Сборка релиза
 
----
+### Windows
 
-## 📜 License
+Запускать на Windows:
 
-MIT License — see [LICENSE](./LICENSE) file for full text.
+```powershell
+.\packaging\scripts\build_windows.ps1 -ZipPortable
+```
 
----
+Результат:
 
-## 🧠 Credits
+- `dist/AnimeEnhancement/AnimeEnhancement.exe` — portable GUI build.
+- `dist/AnimeEnhancement/AnimeEnhancementCLI.exe` — helper для запуска пайплайна из GUI без Python.
+- `release/windows/AnimeEnhancementSetup.exe` — Inno Setup installer, если найден `ISCC.exe`.
+- `release/windows/AnimeEnhancement-Windows.zip` — portable zip, если указан `-ZipPortable`.
 
-- [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan) by nihui
-- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) by Xintao
-- [RIFE](https://github.com/nihui/rife-ncnn-vulkan) by nihui
-- Inspired by anime remastering communities
+Если Inno Setup не установлен, скрипт честно выведет инструкцию и оставит готовый portable build в `dist/AnimeEnhancement`.
+
+### Linux
+
+Запускать на Linux:
+
+```bash
+chmod +x packaging/scripts/build_linux.sh
+./packaging/scripts/build_linux.sh
+```
+
+Результат:
+
+- `dist/AnimeEnhancement/AnimeEnhancement` — portable GUI binary.
+- `dist/AnimeEnhancement/AnimeEnhancementCLI` — helper для запуска пайплайна из GUI.
+- `release/linux/AnimeEnhancement-Linux.tar.gz` — portable archive.
+
+### macOS
+
+Запускать на macOS:
+
+```bash
+chmod +x packaging/scripts/build_macos.sh
+./packaging/scripts/build_macos.sh
+```
+
+Результат:
+
+- `dist/AnimeEnhancement.app` — app bundle.
+- `release/macos/AnimeEnhancement-macOS.zip` — zip для GitHub Releases.
+
+DMG пока не собирается автоматически. Инструкция по генерации `.icns` лежит в `packaging/macos/assets/ICNS_TODO.txt`.
+
+## build, dist и release
+
+- `build/` — промежуточная техническая папка PyInstaller. Пользователю ее не показывать и exe из нее не запускать.
+- `dist/` — portable-сборка программы после PyInstaller.
+- `release/` — финальные файлы, которые можно выкладывать в GitHub Releases.
+
+## Почему нет одного installer на все ОС
+
+Windows, Linux и macOS используют разные форматы приложений, разные бинарники AI-утилит и разные правила установки. Один “магический” installer на все ОС был бы ненадежным и misleading. В проекте общая packaging-архитектура, но разные сборочные скрипты и артефакты под каждую платформу.
+
+## Assets
+
+Общие branding assets:
+
+- `assets/branding/anime_enhancement_logo_1024.png`
+- `assets/branding/banner_1200x380.png`
+
+Windows assets:
+
+- `packaging/windows/assets/anime_enhancement.ico`
+- `packaging/windows/assets/wizard-small.bmp`
+- `packaging/windows/assets/wizard-large.bmp`
+
+Linux assets:
+
+- `packaging/linux/assets/anime_enhancement.png`
+- `packaging/linux/assets/anime-enhancement.desktop`
+
+macOS assets:
+
+- `packaging/macos/assets/anime_enhancement.icns` — нужно создать на macOS, если нужен app icon.
+
+Лицензия используется из корневого файла `LICENSE`. Копии `LICENSE.txt` в platform assets не нужны.
+
+## Внешние бинарники
+
+Проект использует:
+
+- `ffmpeg` и `ffprobe`;
+- `realesrgan-ncnn-vulkan`;
+- `waifu2x-ncnn-vulkan`;
+- `rife-ncnn-vulkan`.
+
+Windows `.exe` binaries не подходят для Linux/macOS. Linux и macOS требуют свои binaries в соответствующих папках `src/utils/*/*-linux` и `src/utils/*/*-macos`. Dependency checker выводит ошибку на русском, если binary для текущей ОС отсутствует.
+
+FFmpeg ищется так:
+
+1. app-local bundled location внутри portable/app сборки или `tools/ffmpeg`;
+2. системный `PATH`.
+
+Приложение не меняет глобальный `PATH` пользователя.
+
+## Пути данных
+
+Код не должен зависеть от текущей рабочей директории. В dev-режиме ресурсы ищутся в корне репозитория. Во frozen-режиме ресурсы ищутся внутри portable/app bundle, а пользовательские профили, логи и рабочие данные пишутся в пользовательские директории:
+
+- Windows: `%LOCALAPPDATA%\AnimeEnhancement`.
+- Linux: `$XDG_DATA_HOME/anime-enhancement` или `~/.local/share/anime-enhancement`.
+- macOS: `~/Library/Application Support/AnimeEnhancement`.
+
+## Что выкладывать в GitHub Release
+
+Windows:
+
+- `release/windows/AnimeEnhancementSetup.exe` — основной пользовательский артефакт.
+- `release/windows/AnimeEnhancement-Windows.zip` — опциональный portable archive.
+
+Linux:
+
+- `release/linux/AnimeEnhancement-Linux.tar.gz`.
+
+macOS:
+
+- `release/macos/AnimeEnhancement-macOS.zip`.
+- Будущий `.dmg`, когда будет добавлена и проверена сборка DMG на macOS.

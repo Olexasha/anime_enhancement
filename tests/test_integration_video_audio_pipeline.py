@@ -2,12 +2,12 @@ import asyncio
 import json
 import subprocess
 
-from src.tests.conftest import (
+from tests.conftest import (
     configure_test_environment,
     reload_project_modules,
     require_video_tools,
 )
-from src.tests.test_smoke_video_encoding import _write_png_frames
+from tests.test_smoke_video_encoding import _write_png_frames
 
 
 def _probe(path):
@@ -104,9 +104,9 @@ def test_video_concat_and_audio_copy_pipeline(monkeypatch, tmp_path):
     final_audio = _stream(final_probe, "audio")
 
     assert final_video["codec_name"] == "h264", "Видео должно остаться H.264"
-    assert (
-        final_audio["codec_name"] == original_audio["codec_name"]
-    ), "Аудио должно копироваться"
+    assert final_audio["codec_name"] == original_audio["codec_name"], (
+        "Аудио должно копироваться"
+    )
     assert final_video["avg_frame_rate"] == "24000/1001", "FPS не должен дрейфовать"
     assert final_video["nb_frames"] == original_video["nb_frames"] == "48"
     assert final_probe["format"]["duration"] == original_probe["format"]["duration"]

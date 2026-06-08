@@ -2,13 +2,12 @@ import os
 import platform
 import re
 import subprocess as sp
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
-from typing import Optional, Tuple
 
 import psutil
 
-from src.config.settings import ROOT_DIR
+from src.config.runtime_paths import bundled_bin_path
 from src.utils.logger import logger
 
 
@@ -30,7 +29,7 @@ class ComputerParams:
     MIN_RAM_GB = 4
     MIN_CPU_THREADS = 2
     MIN_GPU_MEMORY = 2048  # мин рекомендуемая память GPU в MB
-    MIN_SSD_SPEED = 500    # мин рекомендуемая скорость SSD в MB/s
+    MIN_SSD_SPEED = 500  # мин рекомендуемая скорость SSD в MB/s
 
     def __init__(self):
         try:
@@ -44,7 +43,6 @@ class ComputerParams:
             logger.error(f"Ошибка инициализации системы: {str(e)}")
             raise
 
-    @lru_cache(maxsize=1)
     def _get_cpu_threads(self) -> int:
         """
         Получение количества доступных потоков процессора.
@@ -60,7 +58,6 @@ class ComputerParams:
             logger.warning(f"Ошибка получения количества потоков CPU: {str(e)}")
             return 1
 
-    @lru_cache(maxsize=1)
     def _get_ram_total(self) -> float:
         """
         Получение общего объема оперативной памяти в ГБ.
@@ -106,7 +103,7 @@ class ComputerParams:
         try:
             if not self._is_nvidia_smi_installed():
                 return "NVIDIA GPU не обнаружен или nvidia-smi не установле"
-            
+
             gpu_info = self._run_subprocess(
                 ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
             )
@@ -125,7 +122,7 @@ class ComputerParams:
         try:
             if not self._is_nvidia_smi_installed():
                 return 0
-            
+
             raw = self._run_subprocess(
                 ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader"]
             )
@@ -140,51 +137,48 @@ class ComputerParams:
     def ai_realesrgan_path(self) -> str:
         """Получает AI RealESRGAN-ncnn-vulkan путь к исполняемому файлу"""
         try:
-            executable = "realesrgan-ncnn-vulkan" + (".exe" if self.os == "win" else "")
-            path = os.path.join(
-                ROOT_DIR, "src", "utils", "realesrgan", f"realesrgan-{self.os}", executable
-            )
+            path = bundled_bin_path("realesrgan-ncnn-vulkan")
             if not Path(path).exists():
                 msg = f"AI RealESRGAN-ncnn-vulkan исполняемый файл не найден {path}"
                 logger.warning(msg)
                 raise FileNotFoundError(msg)
-            return path
+            return str(path)
         except Exception as e:
-            logger.error(f"Ошибка при получении пути к исполняемому файлу realesrgan: {str(e)}")
+            logger.error(
+                f"Ошибка при получении пути к исполняемому файлу realesrgan: {str(e)}"
+            )
             raise
 
     @cached_property
     def ai_waifu2x_path(self) -> str:
         """Получает AI Waifu2x-ncnn-vulkan путь к исполняемому файлу"""
         try:
-            executable = "waifu2x-ncnn-vulkan" + (".exe" if self.os == "win" else "")
-            path = os.path.join(
-                ROOT_DIR, "src", "utils", "waifu2x", f"waifu2x-{self.os}", executable
-            )
+            path = bundled_bin_path("waifu2x-ncnn-vulkan")
             if not Path(path).exists():
-                msg = f"AI Waifu2x-ncnn-vulkan исполняемый файл не найд {path}"
+                msg = f"AI Waifu2x-ncnn-vulkan исполняемый файл не найден {path}"
                 logger.warning(msg)
                 raise FileNotFoundError(msg)
-            return path
+            return str(path)
         except Exception as e:
-            logger.error(f"Ошибка при получении пути к исполняемому файлу waifu2x: {str(e)}")
+            logger.error(
+                f"Ошибка при получении пути к исполняемому файлу waifu2x: {str(e)}"
+            )
             raise
 
     @cached_property
     def ai_rife_path(self) -> str:
         """Получает AI RIFE-ncnn-vulkan путь к исполняемому файлу"""
         try:
-            executable = "rife-ncnn-vulkan" + (".exe" if self.os == "win" else "")
-            path = os.path.join(
-                ROOT_DIR, "src", "utils", "rife", f"rife-{self.os}", executable
-            )
+            path = bundled_bin_path("rife-ncnn-vulkan")
             if not Path(path).exists():
-                msg = f"AI Rife-ncnn-vulkan исполняемый файл не найд {path}"
+                msg = f"AI RIFE-ncnn-vulkan исполняемый файл не найден {path}"
                 logger.warning(msg)
                 raise FileNotFoundError(msg)
-            return path
+            return str(path)
         except Exception as e:
-            logger.error(f"Ошибка при получении пути к исполняемому файлу rife: {str(e)}")
+            logger.error(
+                f"Ошибка при получении пути к исполняемому файлу rife: {str(e)}"
+            )
             raise
 
     @staticmethod
@@ -193,10 +187,10 @@ class ComputerParams:
         try:
             sp.run(["nvidia-smi"], capture_output=True, check=True)
             return True
-        except:
+        except Exception:
             return False
 
-    def get_optimal_threads(self) -> Tuple[str, int]:
+    def get_optimal_threads(self) -> tuple[str, int]:
         """
         Рассчитывает оптимальные параметры для -j load:proc:save и количество процессов/тредов
         """
@@ -208,10 +202,14 @@ class ComputerParams:
 
             # подбираем load:proc:save
             j_params = f"{load_threads}:{proc_threads}:{save_threads}"
-            logger.info(f"Оптимальная конфигурация тредов: {j_params} с {processes} процессами")
+            logger.info(
+                f"Оптимальная конфигурация тредов: {j_params} с {processes} процессами"
+            )
             return j_params, processes
         except Exception as e:
-            logger.error(f"Ошибка при вычислении тредов load:proc:save для нейронок: {str(e)}")
+            logger.error(
+                f"Ошибка при вычислении тредов load:proc:save для нейронок: {str(e)}"
+            )
             raise
 
     def _calculate_processing_threads(self) -> int:
@@ -289,7 +287,7 @@ class ComputerParams:
             return 2
 
     @staticmethod
-    def _run_subprocess(cmd: list) -> Optional[str]:
+    def _run_subprocess(cmd: list) -> str | None:
         """Запуск подпроцесса с обработкой ошибок"""
         try:
             result = sp.run(cmd, capture_output=True, text=True, check=True)

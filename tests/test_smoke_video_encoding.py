@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-from src.tests.conftest import (
+from tests.conftest import (
     configure_test_environment,
     reload_project_modules,
     require_video_tools,
@@ -75,7 +75,7 @@ def test_generate_video_from_frames_smoke(monkeypatch, tmp_path):
 
     assert video_stream["codec_name"] == "h264", "Short-видео должно быть H.264"
     assert video_stream["pix_fmt"] == "yuv420p", "Пиксельный формат должен быть yuv420p"
-    assert (
-        video_stream["avg_frame_rate"] == "24000/1001"
-    ), "FPS должен сохраняться дробью"
+    assert video_stream["avg_frame_rate"] == "24000/1001", (
+        "FPS должен сохраняться дробью"
+    )
     assert video_stream["nb_frames"] == "5", "Количество кадров должно совпадать"

@@ -116,7 +116,7 @@ def extract_frames_to_batches(
         for _ in as_completed(futures):
             processed_frames += 1
 
-        logger.info(f"Извлечение фреймов: {total_frames}/{total_frames} " f"(100%)")
+        logger.info(f"Извлечение фреймов: {total_frames}/{total_frames} (100%)")
 
     cap.release()
     logger.success(f"Успешно извлечено {total_frames} кадров")
