@@ -1,4 +1,4 @@
-from src.tests.conftest import configure_test_environment, reload_project_modules
+from tests.conftest import configure_test_environment, reload_project_modules
 
 
 def test_recommended_settings_defaults(monkeypatch, tmp_path):
