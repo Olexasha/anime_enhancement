@@ -4,7 +4,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 from src.config.settings import (
     DENOISE_FACTOR,
@@ -43,7 +43,7 @@ class ProcessingType(Enum):
 
 
 # Конфигурация для каждого типа обработки
-PROCESSING_CONFIG: Dict[ProcessingType, Dict[str, Any]] = {
+PROCESSING_CONFIG: dict[ProcessingType, dict[str, Any]] = {
     ProcessingType.DENOISE: {
         "input_dir": INPUT_BATCHES_DIR,
         "output_dir": DENOISED_BATCHES_DIR,
@@ -182,7 +182,7 @@ def _improve_batch(
             else:
                 raise RuntimeError(
                     f"Не удалось {config['display_name'].lower()}ить {batch_num} после {max_retries} попыток"
-                )
+                ) from error
 
         except Exception as error:
             logger.error(f"Неожиданная ошибка в батче {batch_num}: {str(error)}")

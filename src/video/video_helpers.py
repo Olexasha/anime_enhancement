@@ -1,5 +1,4 @@
 import re
-from typing import List
 
 import cv2
 
@@ -29,7 +28,7 @@ def get_video_duration(
     return duration
 
 
-def sort_video_paths(paths: List[str]) -> List[str]:
+def sort_video_paths(paths: list[str]) -> list[str]:
     """
     Сортирует список путей к видеофайлам по числовым значениям в их именах.
     :param paths: Список путей к видеофайлам.

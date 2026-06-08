@@ -1,6 +1,6 @@
 import logging
 
-from src.config.settings import LOGS_DIR
+from src.config.settings import LOG_LEVEL, LOGS_DIR
 from src.files.file_actions import create_dir
 
 
@@ -16,7 +16,7 @@ class LogColors:
 
 
 class CustomFormatter(logging.Formatter):
-    """Кастомный форматтер с цветами для разных уровней логгирования"""
+    """Форматтер консольных логов с цветами для разных уровней"""
 
     SUCCESS_LEVEL = 25
     logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
@@ -38,27 +38,17 @@ class CustomFormatter(logging.Formatter):
 
 
 class Logger:
-    def __init__(
-        self,
-        name: str = "app",
-        level: int = logging.INFO,
-        log_file: str = "",
-    ):
+    def __init__(self, name: str = "app", level: int | None = None, log_file: str = ""):
         self.logger = logging.getLogger(name)
-        self.level = level
-        self.logger.setLevel(level)
+        self.level = level if level is not None else _parse_log_level(LOG_LEVEL)
+        self.logger.setLevel(self.level)
         self._add_success_method()
-
-        # консольный обработчик
+        self._remove_existing_handlers()
         self._setup_console_handler()
-
-        # файловый обработчик, если указан файл
         if log_file:
             self._setup_file_handler(log_file)
 
     def _add_success_method(self):
-        """Добавляем метод success к логгеру"""
-
         def success(self, msg, *args, **kwargs):
             if self.isEnabledFor(CustomFormatter.SUCCESS_LEVEL):
                 self._log(CustomFormatter.SUCCESS_LEVEL, msg, args, **kwargs)
@@ -66,38 +56,45 @@ class Logger:
         logging.Logger.success = success
 
     def _remove_existing_handlers(self):
-        """Удаляет существующие обработчики"""
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
 
     def _setup_console_handler(self):
-        """Настройка цветного вывода в консоль"""
-        ch = logging.StreamHandler()
-        ch.setLevel(self.level)
-        ch.setFormatter(CustomFormatter())
-        self.logger.addHandler(ch)
+        handler = logging.StreamHandler()
+        handler.setLevel(self.level)
+        handler.setFormatter(CustomFormatter())
+        self.logger.addHandler(handler)
 
     def _setup_file_handler(self, log_file: str):
-        """Настройка записи в файл (без цветов)"""
         from logging.handlers import RotatingFileHandler
 
         logs_dir = create_dir(LOGS_DIR, "logs")
-        fh = RotatingFileHandler(
+        handler = RotatingFileHandler(
             f"{logs_dir}/{log_file}",
             maxBytes=5 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
         )
-        fh.setLevel(logging.DEBUG)
+        handler.setLevel(logging.DEBUG)
         file_formatter = logging.Formatter(
             "%(asctime)s - %(levelname)s - %(message)s (%(filename)s:%(lineno)d)",
             datefmt="%d-%m-%Y %H:%M:%S",
         )
-        fh.setFormatter(file_formatter)
-        self.logger.addHandler(fh)
+        handler.setFormatter(file_formatter)
+        self.logger.addHandler(handler)
 
     def get_logger(self):
         return self.logger
+
+
+def _parse_log_level(value: str) -> int:
+    return {
+        "DEBUG": logging.DEBUG,
+        "INFO": logging.INFO,
+        "WARNING": logging.WARNING,
+        "ERROR": logging.ERROR,
+        "CRITICAL": logging.CRITICAL,
+    }.get(str(value).upper(), logging.INFO)
 
 
 logger = Logger().get_logger()

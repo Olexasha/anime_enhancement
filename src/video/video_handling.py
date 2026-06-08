@@ -15,6 +15,7 @@ from src.config.settings import (
     ENABLE_INTERPOLATION,
     FRAMES_MULTIPLY_FACTOR,
     INTERPOLATED_BATCHES_DIR,
+    KEEP_TEMP_FILES,
     OUTPUT_IMAGE_FORMAT,
     TMP_VIDEO_PATH,
     UPSCALED_BATCHES_DIR,
@@ -82,7 +83,7 @@ class VideoHandler:
             await asyncio.sleep(30)
 
         video_paths = []
-        for i in range(self.video_queue.qsize()):
+        for _ in range(self.video_queue.qsize()):
             video_path = self.video_queue.get()
             if not os.path.isfile(video_path):
                 logger.error(f"Видео не существует: {video_path}")
@@ -100,8 +101,9 @@ class VideoHandler:
 
         try:
             output_video = self._handle_merging(video_paths)
-            for video_path in video_paths:
-                await delete_file(video_path)
+            if not KEEP_TEMP_FILES:
+                for video_path in video_paths:
+                    await delete_file(video_path)
             return output_video
         except VideoMergingError as error:
             logger.error(f"Ошибка при сборке видео: {str(error)}")
@@ -166,7 +168,7 @@ class VideoHandler:
             logger.critical(
                 f"Ошибка при генерировании short видео {batch_range_start}-{batch_range_end}: {str(e)}"
             )
-            raise VideoReadFrameError(frame_path)
+            raise VideoReadFrameError(frame_path) from e
         finally:
             if process.stdin:
                 process.stdin.close()
@@ -269,8 +271,7 @@ class VideoHandler:
         if Path(output_path).exists():
             self.final_videos_same_name += 1
             output_path = (
-                f"{output_path.rsplit('.mp4', 1)[0]}_"
-                f"{self.final_videos_same_name}.mp4"
+                f"{output_path.rsplit('.mp4', 1)[0]}_{self.final_videos_same_name}.mp4"
             )
 
         # Подсчитываем общее количество кадров.
@@ -289,7 +290,7 @@ class VideoHandler:
             )
         except VideoMergingError as e:
             logger.error(f"Ошибка объединения видео: {str(e)}")
-            raise VideoMergingError(f"Ошибка при объединении видео: {e}")
+            raise VideoMergingError(f"Ошибка при объединении видео: {e}") from e
         finally:
             concat_list.unlink(missing_ok=True)
             # Очищаем память после завершения
@@ -354,14 +355,17 @@ def build_short_video_sync(
         video_queue.put(video_path)
         logger.info(f"Видео добавлено в очередь: {video_path}")
         logger.success(f"Short видео создано: {video_path} (FPS: {fps})")
-        if ENABLE_INTERPOLATION:
-            asyncio.run(
-                delete_interpolate_batches(int(batch_range_start), int(batch_range_end))
-            )
-        else:
-            asyncio.run(
-                delete_upscale_batches(int(batch_range_start), int(batch_range_end))
-            )
+        if not KEEP_TEMP_FILES:
+            if ENABLE_INTERPOLATION:
+                asyncio.run(
+                    delete_interpolate_batches(
+                        int(batch_range_start), int(batch_range_end)
+                    )
+                )
+            else:
+                asyncio.run(
+                    delete_upscale_batches(int(batch_range_start), int(batch_range_end))
+                )
     else:
         logger.critical("Не удалось создать видео из фреймов")
         raise VideoReadFrameError("Не удалось создать видео из фреймов")

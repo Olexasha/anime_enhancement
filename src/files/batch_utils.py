@@ -1,6 +1,5 @@
 from enum import Enum
 from pathlib import Path
-from typing import List
 
 from src.config.settings import (
     DENOISED_BATCHES_DIR,
@@ -121,7 +120,7 @@ async def delete_frames(
         raise
 
 
-def _chunk_items(items: List[Path], chunk_size: int) -> List[List[Path]]:
+def _chunk_items(items: list[Path], chunk_size: int) -> list[list[Path]]:
     """Делит фреймы на кусочки (chunk) для более быстрого удаления"""
     return [items[i : i + chunk_size] for i in range(0, len(items), chunk_size)]
 
