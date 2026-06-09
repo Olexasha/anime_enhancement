@@ -52,6 +52,9 @@ Write-Host "Poetry окружение: Python $PythonVersion"
 Write-Host "Установка зависимостей через Poetry"
 Invoke-Poetry install --no-root
 
+Write-Host "Подготовка app-local FFmpeg для portable/installer"
+Invoke-Poetry run python "scripts\install_ffmpeg.py" --ensure-local
+
 if (-not $SkipChecks) {
     Write-Host "Проверка pyproject"
     Invoke-Poetry check

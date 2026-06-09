@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import shutil
 import zipfile
@@ -19,22 +20,38 @@ def main() -> int:
         action="store_true",
         help="Только вывести отчет, без установки.",
     )
+    parser.add_argument(
+        "--ensure-local",
+        action="store_true",
+        help="Гарантировать app-local tools/ffmpeg/bin даже если FFmpeg уже есть в PATH.",
+    )
     args = parser.parse_args()
 
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
-    if ffmpeg and ffprobe:
+    if ffmpeg and ffprobe and not args.ensure_local:
         print(f"FFmpeg найден: {ffmpeg}")
         print(f"ffprobe найден: {ffprobe}")
         return 0
 
-    print("FFmpeg или ffprobe не найден в PATH.")
+    if args.ensure_local:
+        local_bin = TOOLS_DIR / "ffmpeg" / "bin"
+        if (local_bin / "ffmpeg.exe").exists() and (
+            local_bin / "ffprobe.exe"
+        ).exists():
+            print(f"FFmpeg уже установлен app-local: {local_bin}")
+            return 0
+    else:
+        print("FFmpeg или ffprobe не найден в PATH.")
+
     if args.report_only:
         return 1
 
     system = platform.system()
     if system == "Windows":
         return install_windows_local()
+    if args.ensure_local:
+        return install_from_path_local()
     if system == "Linux":
         print(
             "Linux: установите FFmpeg через пакетный менеджер, например: sudo apt install ffmpeg"
@@ -45,6 +62,26 @@ def main() -> int:
         return 1
     print(f"Неподдерживаемая ОС для автоустановки FFmpeg: {system}")
     return 1
+
+
+def install_from_path_local() -> int:
+    local_bin = TOOLS_DIR / "ffmpeg" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    copied = []
+    for name in ("ffmpeg", "ffprobe"):
+        source = shutil.which(name)
+        if not source:
+            print(f"{name} не найден в PATH, app-local FFmpeg не подготовлен.")
+            return 1
+        destination = local_bin / Path(source).name
+        shutil.copy2(source, destination)
+        if os.name != "nt":
+            destination.chmod(destination.stat().st_mode | 0o755)
+        copied.append(destination)
+    print("FFmpeg установлен app-local из PATH:")
+    for path in copied:
+        print(f"- {path}")
+    return 0
 
 
 def install_windows_local() -> int:

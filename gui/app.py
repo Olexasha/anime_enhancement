@@ -63,7 +63,7 @@ def setup_application() -> QApplication:
         style_path = Path(__file__).with_name("styles.qss")
     if style_path.exists():
         app.setStyleSheet(style_path.read_text(encoding="utf-8"))
-    icon_path = resource_path("packaging/windows/assets/anime_enhancement.ico")
+    icon_path = resource_path("assets/branding/icon.png")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     return app

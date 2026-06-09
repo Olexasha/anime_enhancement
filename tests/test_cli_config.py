@@ -3,7 +3,32 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from src.config.pipeline_config import PipelineConfig
+
+
+def test_cli_initializes_multiprocessing_before_argparse(monkeypatch):
+    import main as cli_main
+
+    events = []
+
+    def fake_initialize_multiprocessing():
+        events.append("multiprocessing")
+
+    def fake_parse_args(argv):
+        events.append("argparse")
+        raise RuntimeError("stop before config loading")
+
+    monkeypatch.setattr(
+        cli_main, "initialize_multiprocessing", fake_initialize_multiprocessing
+    )
+    monkeypatch.setattr(cli_main, "parse_args", fake_parse_args)
+
+    with pytest.raises(RuntimeError, match="stop before config loading"):
+        cli_main.main([])
+
+    assert events == ["multiprocessing", "argparse"]
 
 
 def test_cli_config_prints_effective_config(tmp_path: Path):

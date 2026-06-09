@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 import time
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from enum import Enum
 from pathlib import Path
@@ -194,6 +195,7 @@ async def monitor_progress(
     is_processing: list,
     batch_numbers: range,
     processing_type: ProcessingType,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> None:
     """
     Универсальный мониторинг прогресса с частым обновлением и визуализацией
@@ -210,6 +212,7 @@ async def monitor_progress(
 
     if processing_type == ProcessingType.INTERPOLATE:
         total_frames = total_frames * FRAMES_MULTIPLY_FACTOR
+    total_frames = max(1, total_frames)
 
     last_logged = 0
     log_interval = 20  # логировать каждые n секунд
@@ -221,6 +224,8 @@ async def monitor_progress(
             if current_frames > processed_frames:
                 processed_frames = current_frames
                 progress_percent = (processed_frames / total_frames) * 100
+                if progress_callback is not None:
+                    progress_callback(min(100.0, progress_percent))
 
                 current_time = time.time()
                 if (
@@ -254,8 +259,10 @@ async def monitor_progress(
         f"(100.0%) | Прошло: {total_time:.1f}сек | Осталось: 0.0сек"
     )
     logger.success(
-        f"Обработка завершена. (Средняя скорость: {total_frames / total_time:.1f} FPS)"
+        f"Обработка завершена. (Средняя скорость: {total_frames / max(total_time, 0.001):.1f} FPS)"
     )
+    if progress_callback is not None:
+        progress_callback(100.0)
 
 
 async def improve_batches(
@@ -266,6 +273,7 @@ async def improve_batches(
     start_batch: int,
     end_batch: int,
     max_retries: int = MAX_RETRIES,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> None:
     """
     Универсальная функция для асинхронной обработки диапазона батчей
@@ -291,7 +299,13 @@ async def improve_batches(
     )
 
     monitor_task = asyncio.create_task(
-        monitor_progress(total_frames, is_processing, batches_range, processing_type)
+        monitor_progress(
+            total_frames,
+            is_processing,
+            batches_range,
+            processing_type,
+            progress_callback,
+        )
     )
 
     try:

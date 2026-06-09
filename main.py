@@ -4,9 +4,11 @@ import argparse
 import asyncio
 import glob
 import json
+import multiprocessing
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
 from pathlib import Path
@@ -61,6 +63,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def initialize_multiprocessing() -> None:
+    """Обслуживает служебный запуск worker-процессов в PyInstaller-сборке."""
+    multiprocessing.freeze_support()
+
+
 def load_runtime_config(config_path: Path | None) -> PipelineConfig:
     config = (
         PipelineConfig.from_json(config_path)
@@ -85,6 +92,46 @@ def emit_gui_progress(value: int, status: str) -> None:
     safe_value = max(0, min(100, int(value)))
     safe_status = status.replace("\n", " ").replace("|", "/")
     print(f"{GUI_PROGRESS_PREFIX}|{safe_value}|{safe_status}", flush=True)
+
+
+@dataclass(frozen=True)
+class ProgressPhase:
+    name: str
+    weight: float
+    start: float = 0.0
+
+
+class PipelineProgress:
+    def __init__(self, *, enable_denoise: bool, enable_interpolation: bool) -> None:
+        raw_phases = [
+            ("prepare", 2.0),
+            ("extract", 8.0),
+            ("denoise", 8.0 if enable_denoise else 0.0),
+            ("upscale", 25.0 if enable_interpolation else 55.0),
+            ("interpolate", 52.0 if enable_interpolation else 0.0),
+            ("short_video", 4.0),
+            ("final_merge", 4.0),
+            ("audio", 3.0),
+        ]
+        total = sum(weight for _, weight in raw_phases if weight > 0)
+        phases: dict[str, ProgressPhase] = {}
+        cursor = 0.0
+        for name, weight in raw_phases:
+            if weight <= 0:
+                continue
+            normalized = weight * 100 / total
+            phases[name] = ProgressPhase(name, normalized, cursor)
+            cursor += normalized
+        self.phases = phases
+
+    def value(self, phase_name: str, phase_percent: float) -> int:
+        phase = self.phases[phase_name]
+        progress = phase.start + phase.weight * max(0.0, min(100.0, phase_percent)) / 100
+        return max(0, min(99, round(progress)))
+
+    def emit(self, phase_name: str, phase_percent: float, status: str) -> None:
+        overall = self.value(phase_name, phase_percent)
+        emit_gui_progress(overall, f"{status} / Общий прогресс: {overall}%")
 
 
 def print_header(title: str) -> None:
@@ -163,6 +210,7 @@ async def process_batches(
     ai_rife_path: str,
     start_batch: int,
     end_batch_to_improve: int,
+    progress: PipelineProgress,
 ) -> None:
     from src.config import settings
     from src.files.batch_utils import (
@@ -176,6 +224,32 @@ async def process_batches(
     end_batch = 0
     first_batch = start_batch
     total_batches = max(1, end_batch_to_improve - first_batch + 1)
+
+    def batch_phase_percent(
+        batch_start: int, batch_end: int, local_percent: float
+    ) -> float:
+        completed_before = max(0, batch_start - first_batch)
+        current_size = max(1, batch_end - batch_start + 1)
+        completed = completed_before + current_size * max(0.0, min(100.0, local_percent)) / 100
+        return max(0.0, min(100.0, completed * 100 / total_batches))
+
+    def emit_batch_progress(
+        phase_name: str,
+        display_name: str,
+        batch_start: int,
+        batch_end: int,
+        local_percent: float,
+    ) -> None:
+        phase_percent = batch_phase_percent(batch_start, batch_end, local_percent)
+        overall = progress.value(phase_name, phase_percent)
+        emit_gui_progress(
+            overall,
+            (
+                f"{display_name} батчей ({batch_start}-{batch_end} из {end_batch_to_improve}): "
+                f"{round(local_percent)}% / Общий прогресс: {overall}%"
+            ),
+        )
+
     while end_batch != end_batch_to_improve:
         end_batch = min(start_batch + threads - 1, end_batch_to_improve)
         logger.info(f"Обработка батчей с {start_batch} по {end_batch}")
@@ -188,6 +262,9 @@ async def process_batches(
                 ai_waifu2x_path,
                 start_batch,
                 end_batch,
+                progress_callback=lambda percent, batch_start=start_batch, batch_end=end_batch: emit_batch_progress(
+                    "denoise", "Денойз", batch_start, batch_end, percent
+                ),
             )
             if not settings.KEEP_TEMP_FILES:
                 await delete_default_batches(start_batch, end_batch)
@@ -204,6 +281,9 @@ async def process_batches(
             ai_realesrgan_path,
             start_batch,
             end_batch,
+            progress_callback=lambda percent, batch_start=start_batch, batch_end=end_batch: emit_batch_progress(
+                "upscale", "Апскейл", batch_start, batch_end, percent
+            ),
         )
         if not settings.KEEP_TEMP_FILES:
             if settings.ENABLE_DENOISE:
@@ -228,6 +308,13 @@ async def process_batches(
                     ai_rife_path,
                     batches[0],
                     batches[-1],
+                    progress_callback=lambda percent, batch_start=batches[0], batch_end=batches[-1]: emit_batch_progress(
+                        "interpolate",
+                        "RIFE",
+                        batch_start,
+                        batch_end,
+                        percent,
+                    ),
                 )
                 if not settings.KEEP_TEMP_FILES:
                     await delete_upscale_batches(batches[0], batches[-1])
@@ -241,9 +328,10 @@ async def process_batches(
         video.build_short_video(batches_to_perform)
         completed_batches = max(0, end_batch - first_batch + 1)
         batch_progress = completed_batches / total_batches
-        emit_gui_progress(
-            30 + round(batch_progress * 55),
-            f"ИИ-обработка батчей: {completed_batches}/{total_batches}",
+        progress.emit(
+            "short_video",
+            batch_progress * 100,
+            f"Сборка коротких видео: {completed_batches}/{total_batches}",
         )
         start_batch += threads
 
@@ -261,7 +349,11 @@ async def run_pipeline() -> None:
     print_header("запуск улучшения видео")
 
     try:
-        emit_gui_progress(3, "Проверка системы и путей к AI-утилитам")
+        progress = PipelineProgress(
+            enable_denoise=settings.ENABLE_DENOISE,
+            enable_interpolation=settings.ENABLE_INTERPOLATION,
+        )
+        progress.emit("prepare", 10, "Проверка системы и путей к AI-утилитам")
         my_computer = ComputerParams()
         ai_realesrgan_path = my_computer.ai_realesrgan_path
         ai_waifu2x_path = my_computer.ai_waifu2x_path
@@ -280,9 +372,10 @@ async def run_pipeline() -> None:
             f"\n\tПуть к нейронке апскейла: {ai_realesrgan_path}"
             f"\n\tПуть к нейронке интерполяции: {ai_rife_path}"
         )
+        progress.emit("prepare", 100, "Система и AI-утилиты проверены")
 
         print_header("извлекаем кадры и готовим аудио")
-        emit_gui_progress(8, "Подготовка кадров и аудио")
+        progress.emit("extract", 0, "Подготовка кадров и аудио")
         audio = AudioHandler(threads=my_computer.safe_cpu_threads // 2)
         await clean_up(audio)
 
@@ -291,12 +384,12 @@ async def run_pipeline() -> None:
         fps = await asyncio.to_thread(get_fps_accurate, settings.ORIGINAL_VIDEO)
         video = VideoHandler(fps=fps)
         print_bottom("кадры и аудио подготовлены")
-        emit_gui_progress(25, "Кадры и аудио подготовлены")
+        progress.emit("extract", 100, "Кадры и аудио подготовлены")
 
         print_header("генерируем улучшенные короткие видео")
         end_batch_to_improve = calculate_batches()
         logger.info(f"Всего батчей для обработки: {end_batch_to_improve}")
-        emit_gui_progress(30, f"Начало ИИ-обработки батчей: {end_batch_to_improve}")
+        progress.emit("upscale", 0, f"Начало ИИ-обработки батчей: {end_batch_to_improve}")
         await process_batches(
             process_threads,
             ai_threads,
@@ -306,18 +399,20 @@ async def run_pipeline() -> None:
             ai_rife_path,
             settings.START_BATCH_TO_IMPROVE,
             end_batch_to_improve,
+            progress,
         )
         print_bottom("улучшенные короткие видео сгенерированы")
-        emit_gui_progress(85, "Короткие улучшенные видео сгенерированы")
+        progress.emit("short_video", 100, "Короткие улучшенные видео сгенерированы")
 
         print_header("начало финальной сборки видео")
-        emit_gui_progress(90, "Финальная сборка видео")
+        progress.emit("final_merge", 0, "Финальная сборка видео")
         total_short_videos = ceil(end_batch_to_improve / process_threads)
         final_merge = await video.build_final_video(total_short_videos)
         logger.success(f"Общее видео собрано: {final_merge}")
+        progress.emit("final_merge", 100, "Финальная сборка видео завершена")
 
         logger.info("Добавление аудиодорожки к финальному видео")
-        emit_gui_progress(95, "Добавление аудиодорожки")
+        progress.emit("audio", 0, "Добавление аудиодорожки")
         audio.tmp_video_path = final_merge
         await audio.insert_audio()
         logger.success(f"Аудио добавлено к {settings.FINAL_VIDEO}")
@@ -334,6 +429,7 @@ async def run_pipeline() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    initialize_multiprocessing()
     args = parse_args(argv)
     try:
         config = load_runtime_config(args.config)

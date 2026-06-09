@@ -24,17 +24,15 @@ echo "Poetry окружение: Python $PY_VERSION"
 echo "Установка зависимостей через Poetry"
 poetry install --no-root
 
+echo "Подготовка app-local FFmpeg для .app"
+poetry run python scripts/install_ffmpeg.py --ensure-local
+
 echo "Проверка pyproject"
 poetry check
 echo "Ruff check"
 poetry run ruff check .
 echo "Pytest"
 poetry run pytest
-
-if [ ! -f packaging/macos/assets/anime_enhancement.icns ]; then
-  echo "ПРЕДУПРЕЖДЕНИЕ: anime_enhancement.icns отсутствует. Сборка продолжится без app icon." >&2
-  echo "Инструкция по генерации: packaging/macos/assets/ICNS_TODO.txt" >&2
-fi
 
 echo "Очистка macOS build/dist/release"
 rm -rf build dist/AnimeEnhancement dist/AnimeEnhancement.app release/macos

@@ -18,9 +18,10 @@ def test_gui_import_and_window_smoke():
     window.close()
 
 
-def test_gui_can_save_and_load_profile(tmp_path: Path):
+def test_gui_can_export_and_import_profile(monkeypatch, tmp_path: Path):
     from PySide6.QtWidgets import QApplication
 
+    from gui import main_window
     from gui.main_window import MainWindow
 
     _app = QApplication.instance() or QApplication([])
@@ -30,18 +31,42 @@ def test_gui_can_save_and_load_profile(tmp_path: Path):
 
     window.input_edit.setText(str(tmp_path / "input.mp4"))
     window.output_dir_edit.setText(str(output_dir))
-    window.profile_path_edit.setText(str(profile))
-    window.save_profile_clicked()
+    monkeypatch.setattr(
+        main_window.QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (str(profile), "JSON (*.json)"),
+    )
+    window.export_profile_clicked()
 
     assert profile.exists()
 
     window.output_dir_edit.setText(str(tmp_path / "changed"))
-    window.load_profile_clicked()
+    monkeypatch.setattr(
+        main_window.QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (str(profile), "JSON (*.json)"),
+    )
+    window.import_profile_clicked()
 
     expected_final = output_dir / "input_enhanced.mp4"
     assert window.output_dir_edit.text() == str(output_dir)
     assert window.final_path_label.text() == str(expected_final)
     assert window.detail_widgets["FINAL_VIDEO"].text() == str(expected_final)
+    window.close()
+
+
+def test_gui_max_quality_enables_temporal_tta():
+    from PySide6.QtWidgets import QApplication, QCheckBox
+
+    from gui.main_window import MainWindow
+
+    _app = QApplication.instance() or QApplication([])
+    window = MainWindow(Path(__file__).resolve().parents[1])
+    widget = window.detail_widgets["ENABLE_TEMPORAL_TTA_MODE"]
+
+    assert isinstance(widget, QCheckBox)
+    assert widget.isEnabled()
+    assert widget.isChecked()
     window.close()
 
 
@@ -129,7 +154,7 @@ def test_gui_main_progress_uses_pipeline_markers_not_any_percent():
     assert window.progress.value() == 30
 
     window._handle_process_line("[INFO] Извлечение фреймов: 500/1000 (50%)")
-    assert window.progress.value() == 16
+    assert window.progress.value() == 6
     window.close()
 
 

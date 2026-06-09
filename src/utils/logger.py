@@ -5,7 +5,6 @@ from src.files.file_actions import create_dir
 
 
 class LogColors:
-    GREY = "\x1b[38;20m"
     WHITE = "\x1b[97m"
     YELLOW = "\x1b[33;20m"
     RED = "\x1b[31;20m"

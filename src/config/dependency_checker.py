@@ -188,12 +188,16 @@ def _check_writable_dirs(checks: list[DependencyCheck], project_root: Path) -> N
         else project_root / "data"
     )
     dirs = [
+        data_root,
+        data_root / "input_video",
+        data_root / "output_video",
         data_root / "audio",
         data_root / "tmp_video",
         data_root / "video_batches",
         data_root / "default_frame_batches",
+        data_root / "denoised_frame_batches",
         data_root / "upscaled_frame_batches",
-        data_root / "output_video",
+        data_root / "interpolated_frame_batches",
         profiles_dir()
         if is_frozen() or project_root == PROJECT_ROOT
         else project_root / "profiles",

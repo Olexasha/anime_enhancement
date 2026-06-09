@@ -196,7 +196,6 @@ class MainWindow(QMainWindow):
         self.profile_dir = profiles_dir()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir = default_data_dir()
-        self.current_profile_path = self.profile_dir / "gui_profile.json"
         self.config = PipelineConfig.from_env()
         self.process: QProcess | None = None
         self.env_thread: QThread | None = None
@@ -205,7 +204,6 @@ class MainWindow(QMainWindow):
         self.process_output_buffer = b""
         self.logs_paused = False
         self.pending_log_render = False
-        self.logs_expanded = False
         self.saved_splitter_sizes: list[int] | None = None
         self.detail_widgets: dict[str, Any] = {}
 
@@ -213,11 +211,11 @@ class MainWindow(QMainWindow):
         self._apply_window_icon()
         self.resize(1240, 820)
         self._build_ui()
-        self._populate_from_config(self.config)
+        self._populate_from_config(apply_preset(self.config, next(iter(PRESETS))))
         self._append_log("info", "GUI готов к работе.")
 
     def _apply_window_icon(self) -> None:
-        icon_path = resource_path("packaging/windows/assets/anime_enhancement.ico")
+        icon_path = resource_path("assets/branding/icon.png")
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -457,52 +455,31 @@ class MainWindow(QMainWindow):
         group = QGroupBox("JSON-профили")
         group.setObjectName("settingsCard")
         form = QFormLayout(group)
-        self.profile_path_edit = QLineEdit(str(self.current_profile_path))
-        self.profile_path_edit.setToolTip(
-            "Путь к JSON-профилю, который будет сохранен или загружен."
-        )
-        browse = QPushButton("Выбрать")
-        browse.setObjectName("profileButton")
-        browse.setMinimumHeight(34)
-        browse.setToolTip("Выбрать существующий JSON-профиль.")
-        browse.clicked.connect(self.choose_profile_path)
-        form.addRow(
-            self._form_label(
-                "Файл профиля",
-                "JSON-файл с настройками GUI и пайплайна. Его можно сохранить, загрузить или экспортировать.",
-            ),
-            self._row_with_button(self.profile_path_edit, browse),
-        )
-
         buttons = QHBoxLayout()
-        save = QPushButton("Сохранить профиль")
-        save.setObjectName("profileButton")
-        save.setMinimumHeight(34)
-        save.setToolTip("Сохранить текущие настройки в выбранный JSON-профиль.")
-        save.clicked.connect(self.save_profile_clicked)
-        load = QPushButton("Загрузить профиль")
-        load.setObjectName("profileButton")
-        load.setMinimumHeight(34)
-        load.setToolTip("Загрузить настройки из выбранного JSON-профиля.")
-        load.clicked.connect(self.load_profile_clicked)
-        export_button = QPushButton("Экспортировать как")
+        import_button = QPushButton("Импортировать")
+        import_button.setObjectName("profileButton")
+        import_button.setMinimumHeight(38)
+        import_button.setToolTip("Загрузить настройки из выбранного JSON-профиля.")
+        import_button.clicked.connect(self.import_profile_clicked)
+        export_button = QPushButton("Экспортировать")
         export_button.setObjectName("profileButton")
-        export_button.setMinimumHeight(34)
-        export_button.setToolTip("Сохранить текущие настройки в новый JSON-файл.")
+        export_button.setMinimumHeight(38)
+        export_button.setToolTip("Сохранить текущие настройки в выбранный JSON-файл.")
         export_button.clicked.connect(self.export_profile_clicked)
-        buttons.addWidget(save)
-        buttons.addWidget(load)
+        buttons.addWidget(import_button)
         buttons.addWidget(export_button)
         form.addRow(
             self._form_label(
-                "Действия", "Сохранение, загрузка и экспорт текущего профиля."
+                "Действия",
+                "Импортирует профиль из выбранного файла или экспортирует текущие настройки.",
             ),
             self._layout_widget(buttons),
         )
 
         layout.addWidget(group)
         text = QLabel(
-            "GUI не изменяет src/config/settings.py. При запуске создается JSON-профиль и передается в main.py через --config."
+            f"При запуске GUI сохраняет служебный профиль в {self.profile_dir}. "
+            "Импорт/экспорт позволяет работать с любым JSON-файлом профиля."
         )
         text.setObjectName("hint")
         text.setWordWrap(True)
@@ -655,13 +632,6 @@ class MainWindow(QMainWindow):
             label.setToolTip(tooltip)
         return label
 
-    def _row_with_button(self, line_edit: QLineEdit, button: QPushButton) -> QWidget:
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(line_edit, 1)
-        layout.addWidget(button)
-        return self._layout_widget(layout)
-
     def _layout_widget(self, layout: QHBoxLayout) -> QWidget:
         widget = QWidget()
         widget.setObjectName("cardRow")
@@ -672,14 +642,22 @@ class MainWindow(QMainWindow):
         self.config = config
         input_blocker = QSignalBlocker(self.input_edit)
         output_blocker = QSignalBlocker(self.output_dir_edit)
+        preset_blocker = QSignalBlocker(self.primary_preset_combo)
+        denoise_blocker = QSignalBlocker(self.simple_denoise)
+        interpolation_blocker = QSignalBlocker(self.simple_interpolation)
+        encoder_blocker = QSignalBlocker(self.simple_encoder)
         self.input_edit.setText(config.ORIGINAL_VIDEO)
         self.output_dir_edit.setText(str(Path(config.FINAL_VIDEO).parent))
-        del input_blocker
-        del output_blocker
         self.primary_preset_combo.setCurrentText(self._matching_preset_name(config))
         self.simple_denoise.setChecked(config.ENABLE_DENOISE)
         self.simple_interpolation.setChecked(config.ENABLE_INTERPOLATION)
         self.simple_encoder.setCurrentText(config.VIDEO_ENCODER)
+        del input_blocker
+        del output_blocker
+        del preset_blocker
+        del denoise_blocker
+        del interpolation_blocker
+        del encoder_blocker
         self._update_final_video_from_primary_fields()
 
         values = self.config.to_dict()
@@ -826,16 +804,6 @@ class MainWindow(QMainWindow):
             self.output_dir_edit.setText(path)
             self._update_final_video_from_primary_fields()
 
-    def choose_profile_path(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Выберите профиль",
-            str(self.profile_dir),
-            "JSON (*.json);;Все файлы (*)",
-        )
-        if path:
-            self.profile_path_edit.setText(path)
-
     def apply_selected_preset(self, preset_name: str) -> None:
         if not preset_name:
             return
@@ -846,26 +814,22 @@ class MainWindow(QMainWindow):
         self._populate_from_config(config)
         self._append_log("info", f"Применен пресет: {preset_name}")
 
-    def save_profile_clicked(self) -> None:
+    def import_profile_clicked(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импортировать профиль",
+            str(self.profile_dir),
+            "JSON (*.json);;Все файлы (*)",
+        )
+        if not path:
+            return
         try:
-            path = Path(
-                self.profile_path_edit.text().strip() or self.current_profile_path
-            )
-            self._collect_config().save_json(path)
-            self.current_profile_path = path
-            self._append_log("info", f"Профиль сохранен: {path}")
-        except Exception as error:
-            QMessageBox.critical(self, "Ошибка сохранения", str(error))
-
-    def load_profile_clicked(self) -> None:
-        try:
-            path = Path(self.profile_path_edit.text().strip())
-            config = PipelineConfig.from_json(path)
+            profile_path = Path(path)
+            config = PipelineConfig.from_json(profile_path)
             self._populate_from_config(config)
-            self.current_profile_path = path
-            self._append_log("info", f"Профиль загружен: {path}")
+            self._append_log("info", f"Профиль импортирован: {profile_path}")
         except Exception as error:
-            QMessageBox.critical(self, "Ошибка загрузки", str(error))
+            QMessageBox.critical(self, "Ошибка импорта", str(error))
 
     def export_profile_clicked(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -875,8 +839,12 @@ class MainWindow(QMainWindow):
             "JSON (*.json)",
         )
         if path:
-            self.profile_path_edit.setText(path)
-            self.save_profile_clicked()
+            try:
+                profile_path = Path(path)
+                self._collect_config().save_json(profile_path)
+                self._append_log("info", f"Профиль экспортирован: {profile_path}")
+            except Exception as error:
+                QMessageBox.critical(self, "Ошибка экспорта", str(error))
 
     def check_environment_clicked(self) -> None:
         if self.env_thread is not None:
@@ -1081,19 +1049,23 @@ class MainWindow(QMainWindow):
         if not match:
             return
         frame_percent = max(0, min(100, int(match.group(1))))
-        overall_percent = 8 + round(frame_percent * 17 / 100)
+        overall_percent = 2 + round(frame_percent * 8 / 100)
         self._set_main_progress(
-            overall_percent, f"Извлечение кадров: {frame_percent}%"
+            overall_percent,
+            f"Извлечение кадров: {frame_percent}% / Общий прогресс: {overall_percent}%",
         )
 
     def _set_main_progress(self, value: int, status: str) -> None:
         safe_value = max(0, min(100, int(value)))
         self.progress.setValue(safe_value)
-        self.progress.setFormat(f"{status}: {safe_value}%")
-        self.statusBar().showMessage(f"{status} ({safe_value}%)")
+        if "Общий прогресс:" in status:
+            display = status
+        else:
+            display = f"{status}: {safe_value}%"
+        self.progress.setFormat(display)
+        self.statusBar().showMessage(display)
 
     def toggle_logs_expanded(self, expanded: bool) -> None:
-        self.logs_expanded = expanded
         if expanded:
             self.saved_splitter_sizes = self.splitter.sizes()
             self.header_widget.hide()

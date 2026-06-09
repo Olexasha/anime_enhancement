@@ -67,6 +67,12 @@ def test_preset_fast_changes_encoder():
     assert config.ENABLE_DENOISE is False
 
 
+def test_max_quality_preset_enables_temporal_tta():
+    config = apply_preset(PipelineConfig.defaults(), "Максимальное качество")
+
+    assert config.ENABLE_TEMPORAL_TTA_MODE is True
+
+
 def test_parse_bool_russian_values():
     assert parse_bool("да") is True
     assert parse_bool("нет") is False

@@ -14,6 +14,8 @@ def add_tree(source: Path, target: str):
     for path in source.rglob("*"):
         if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
             continue
+        if path.name == "ffmpeg_win.zip":
+            continue
         if path.is_file():
             destination = Path(target) / path.relative_to(source).parent
             items.append((str(path), str(destination)))
@@ -22,10 +24,16 @@ def add_tree(source: Path, target: str):
 
 datas = [
     (str(ROOT / "gui" / "styles.qss"), "gui"),
+    (str(ROOT / "assets" / "branding" / "icon.png"), "assets/branding"),
+    (str(ICON), "assets/branding"),
+    (
+        str(ROOT / "assets" / "branding" / "anime_enhancement_logo_1024.png"),
+        "assets/branding",
+    ),
+    (str(ROOT / "assets" / "branding" / "banner_1200x380.png"), "assets/branding"),
 ]
 datas += add_tree(ROOT / "src" / "utils", "src/utils")
-datas += add_tree(ROOT / "assets" / "branding", "assets/branding")
-datas += add_tree(ROOT / "packaging" / "windows" / "assets", "packaging/windows/assets")
+datas += add_tree(ROOT / "tools" / "ffmpeg" / "bin", "tools/ffmpeg/bin")
 
 hiddenimports = collect_submodules("src") + collect_submodules("gui")
 

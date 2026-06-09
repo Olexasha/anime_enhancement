@@ -35,6 +35,17 @@ def _pyinstaller_meipass() -> Path | None:
     return Path(value).resolve() if value else None
 
 
+def _repo_root_from_frozen_app() -> Path | None:
+    """Dev-only: frozen exe from repo/dist should still use repo-local data."""
+    root = app_root()
+    for candidate in (root, *root.parents):
+        if (candidate / "pyproject.toml").is_file() and (
+            candidate / "src" / "config"
+        ).is_dir():
+            return candidate
+    return None
+
+
 def resource_path(relative: str | Path) -> Path:
     """Путь к bundled/dev ресурсу без зависимости от текущей рабочей директории."""
     relative_path = Path(relative)
@@ -129,6 +140,10 @@ def user_config_dir() -> Path:
     if override:
         return Path(override).expanduser()
 
+    if is_frozen():
+        repo_root = _repo_root_from_frozen_app()
+        return (repo_root / "config") if repo_root else app_root() / "config"
+
     system = platform.system()
     if system == "Windows":
         return user_data_dir() / "config"
@@ -144,17 +159,19 @@ def default_data_dir() -> Path:
     if override:
         return Path(override).expanduser()
     if is_frozen():
-        return user_data_dir() / "data"
+        repo_root = _repo_root_from_frozen_app()
+        return (repo_root / "data") if repo_root else app_root() / "data"
     return project_root() / "data"
 
 
 def profiles_dir() -> Path:
     if is_frozen():
-        return user_config_dir() / "profiles"
+        repo_root = _repo_root_from_frozen_app()
+        return (repo_root / "profiles") if repo_root else app_root() / "profiles"
     return project_root() / "profiles"
 
 
 def logs_parent_dir() -> Path:
     if is_frozen():
-        return user_data_dir()
+        return _repo_root_from_frozen_app() or app_root()
     return project_root()

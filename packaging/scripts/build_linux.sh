@@ -24,6 +24,9 @@ echo "Poetry окружение: Python $PY_VERSION"
 echo "Установка зависимостей через Poetry"
 poetry install --no-root
 
+echo "Подготовка app-local FFmpeg для portable"
+poetry run python scripts/install_ffmpeg.py --ensure-local
+
 echo "Проверка pyproject"
 poetry check
 echo "Ruff check"

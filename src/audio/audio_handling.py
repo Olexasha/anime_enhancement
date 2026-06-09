@@ -1,7 +1,6 @@
 import asyncio
 import os
 import subprocess
-from concurrent.futures import ProcessPoolExecutor
 
 from src.audio.audio_helpers import run_ffmpeg_command_with_progress
 from src.config.settings import (
@@ -105,6 +104,7 @@ class AudioHandler:
             self.__check_audio_extracted(audio_file)
             self.audio_path = audio_file
             logger.success(f"Аудио успешно извлечено {audio_file}")
+            return audio_file
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка извлечения аудио: {e.stderr.decode()}")
             raise RuntimeError(f"Ошибка извлечения аудио: {e.stderr.decode()}") from e
@@ -118,9 +118,7 @@ class AudioHandler:
             return self.in_video_path
 
         logger.debug("Запуск асинхронного извлечения аудио")
-        loop = asyncio.get_running_loop()
-        with ProcessPoolExecutor() as pool:
-            return await loop.run_in_executor(pool, self.extract_audio_sync)
+        return await asyncio.to_thread(self.extract_audio_sync)
 
     async def insert_audio(self) -> None:
         """

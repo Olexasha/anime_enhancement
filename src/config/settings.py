@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.config.pipeline_config import PROJECT_ROOT, PipelineConfig
+from src.config.pipeline_config import PipelineConfig
 from src.config.runtime_paths import default_data_dir, logs_parent_dir, resource_path
 
 _CONFIG = PipelineConfig.from_env()
 
-ROOT_DIR = str(PROJECT_ROOT)
 DATA_ROOT = default_data_dir()
 ORIGINAL_VIDEO = _CONFIG.ORIGINAL_VIDEO
 FINAL_VIDEO = _CONFIG.FINAL_VIDEO
@@ -66,6 +65,9 @@ ENABLE_TEMPORAL_TTA_MODE = _CONFIG.ENABLE_TEMPORAL_TTA_MODE
 def ensure_data_dirs() -> None:
     """Создает рабочие папки проекта, если их еще нет."""
     for path in (
+        str(DATA_ROOT),
+        str(Path(ORIGINAL_VIDEO).expanduser().parent),
+        str(Path(FINAL_VIDEO).expanduser().parent),
         AUDIO_PATH,
         TMP_VIDEO_PATH,
         BATCH_VIDEO_PATH,
@@ -73,7 +75,6 @@ def ensure_data_dirs() -> None:
         UPSCALED_BATCHES_DIR,
         DENOISED_BATCHES_DIR,
         INTERPOLATED_BATCHES_DIR,
-        str(Path(FINAL_VIDEO).expanduser().parent),
     ):
         Path(path).mkdir(parents=True, exist_ok=True)
 

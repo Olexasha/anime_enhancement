@@ -20,10 +20,17 @@ def add_tree(source: Path, target: str):
     return items
 
 
-datas = [(str(ROOT / "gui" / "styles.qss"), "gui")]
+datas = [
+    (str(ROOT / "gui" / "styles.qss"), "gui"),
+    (str(ROOT / "assets" / "branding" / "icon.png"), "assets/branding"),
+    (
+        str(ROOT / "assets" / "branding" / "anime_enhancement_logo_1024.png"),
+        "assets/branding",
+    ),
+    (str(ROOT / "assets" / "branding" / "banner_1200x380.png"), "assets/branding"),
+]
 datas += add_tree(ROOT / "src" / "utils", "src/utils")
-datas += add_tree(ROOT / "assets" / "branding", "assets/branding")
-datas += add_tree(ROOT / "packaging" / "macos" / "assets", "packaging/macos/assets")
+datas += add_tree(ROOT / "tools" / "ffmpeg" / "bin", "tools/ffmpeg/bin")
 
 hiddenimports = collect_submodules("src") + collect_submodules("gui")
 

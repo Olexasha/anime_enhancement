@@ -124,11 +124,6 @@ class PipelineConfig:
         }
         return cls(**values)
 
-    def merge(self, override: PipelineConfig) -> PipelineConfig:
-        base = self.to_dict()
-        base.update(override.to_dict())
-        return PipelineConfig(**base)
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -273,6 +268,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "VIDEO_PRESET": "slow",
         "VIDEO_PIX_FMT": "yuv420p",
         "ENABLE_UHD_MODE": True,
+        "ENABLE_TEMPORAL_TTA_MODE": True,
     },
     "Быстрее": {
         "ENABLE_DENOISE": False,

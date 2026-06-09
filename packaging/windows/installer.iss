@@ -5,6 +5,7 @@
 #define ProjectRoot "..\.."
 #define DistDir ProjectRoot + "\dist\AnimeEnhancement"
 #define AssetsDir "assets"
+#define ShortcutIcon "{app}\_internal\assets\branding\anime_enhancement.ico"
 
 [Setup]
 AppId={{5F08A8E5-1A6D-4F36-9E4A-8A91B6F884D8}
@@ -38,8 +39,8 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{#ShortcutIcon}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; IconFilename: "{#ShortcutIcon}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Запустить {#AppName}"; Flags: nowait postinstall skipifsilent
