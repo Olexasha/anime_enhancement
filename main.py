@@ -126,7 +126,9 @@ class PipelineProgress:
 
     def value(self, phase_name: str, phase_percent: float) -> int:
         phase = self.phases[phase_name]
-        progress = phase.start + phase.weight * max(0.0, min(100.0, phase_percent)) / 100
+        progress = (
+            phase.start + phase.weight * max(0.0, min(100.0, phase_percent)) / 100
+        )
         return max(0, min(99, round(progress)))
 
     def emit(self, phase_name: str, phase_percent: float, status: str) -> None:
@@ -166,14 +168,14 @@ async def clean_up(audio: Any) -> None:
         delete_all_batches(BatchType.INTERPOLATE),
         audio.delete_audio_if_exists(),
     ]
-    delete_tasks.extend(
-        delete_file(f)
-        for f in glob.glob(os.path.join(settings.BATCH_VIDEO_PATH, "*.mp4"))
-    )
-    delete_tasks.extend(
-        delete_file(f)
-        for f in glob.glob(os.path.join(settings.TMP_VIDEO_PATH, "*.mp4"))
-    )
+    for directory, patterns in (
+        (settings.BATCH_VIDEO_PATH, ("*.mp4", "*.mkv")),
+        (settings.TMP_VIDEO_PATH, ("*.mp4", "*.mkv", "*.txt")),
+    ):
+        for pattern in patterns:
+            delete_tasks.extend(
+                delete_file(f) for f in glob.glob(os.path.join(directory, pattern))
+            )
     if delete_tasks:
         await asyncio.gather(*delete_tasks)
     logger.debug("Временные файлы успешно удалены")
@@ -230,7 +232,9 @@ async def process_batches(
     ) -> float:
         completed_before = max(0, batch_start - first_batch)
         current_size = max(1, batch_end - batch_start + 1)
-        completed = completed_before + current_size * max(0.0, min(100.0, local_percent)) / 100
+        completed = (
+            completed_before + current_size * max(0.0, min(100.0, local_percent)) / 100
+        )
         return max(0.0, min(100.0, completed * 100 / total_batches))
 
     def emit_batch_progress(
@@ -262,7 +266,9 @@ async def process_batches(
                 ai_waifu2x_path,
                 start_batch,
                 end_batch,
-                progress_callback=lambda percent, batch_start=start_batch, batch_end=end_batch: emit_batch_progress(
+                progress_callback=lambda percent,
+                batch_start=start_batch,
+                batch_end=end_batch: emit_batch_progress(
                     "denoise", "Денойз", batch_start, batch_end, percent
                 ),
             )
@@ -376,7 +382,10 @@ async def run_pipeline() -> None:
 
         print_header("извлекаем кадры и готовим аудио")
         progress.emit("extract", 0, "Подготовка кадров и аудио")
-        audio = AudioHandler(threads=my_computer.safe_cpu_threads // 2)
+        audio = AudioHandler(
+            threads=my_computer.safe_cpu_threads // 2,
+            keep_temp_files=settings.KEEP_TEMP_FILES,
+        )
         await clean_up(audio)
 
         asyncio.create_task(audio.extract_audio())
@@ -389,7 +398,9 @@ async def run_pipeline() -> None:
         print_header("генерируем улучшенные короткие видео")
         end_batch_to_improve = calculate_batches()
         logger.info(f"Всего батчей для обработки: {end_batch_to_improve}")
-        progress.emit("upscale", 0, f"Начало ИИ-обработки батчей: {end_batch_to_improve}")
+        progress.emit(
+            "upscale", 0, f"Начало ИИ-обработки батчей: {end_batch_to_improve}"
+        )
         await process_batches(
             process_threads,
             ai_threads,

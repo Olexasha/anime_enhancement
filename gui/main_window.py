@@ -77,18 +77,29 @@ DETAIL_FIELDS = [
     "VIDEO_ENCODER",
     "VIDEO_CRF",
     "VIDEO_PRESET",
+    "VIDEO_TUNE",
     "VIDEO_NVENC_CQ",
     "VIDEO_PIX_FMT",
+    "INTERMEDIATE_VIDEO_ENCODER",
+    "INTERMEDIATE_VIDEO_CRF",
+    "INTERMEDIATE_VIDEO_PRESET",
+    "INTERMEDIATE_VIDEO_PIX_FMT",
+    "INTERMEDIATE_VIDEO_CONTAINER",
     "FRAMES_MULTIPLY_FACTOR",
     "ENABLE_UHD_MODE",
     "ENABLE_SPATIAL_TTA_MODE",
     "ENABLE_TEMPORAL_TTA_MODE",
+    "KEEP_TEMP_FILES",
+    "LOG_LEVEL",
 ]
 
 LOG_LEVELS = {"debug": 10, "info": 20, "error": 40, "critical": 50}
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 GUI_PROGRESS_RE = re.compile(r"^__GUI_PROGRESS__\|(\d{1,3})\|(.+)$")
 FRAME_EXTRACTION_RE = re.compile(r"Извлечение фреймов: \d+/\d+ \((\d{1,3})%\)")
+LOG_RECORD_LEVEL_RE = re.compile(
+    r"(?:^|\]\s)(DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL):"
+)
 
 
 def decode_process_line(data: bytes) -> str:
@@ -549,6 +560,7 @@ class MainWindow(QMainWindow):
             "ENABLE_UHD_MODE",
             "ENABLE_SPATIAL_TTA_MODE",
             "ENABLE_TEMPORAL_TTA_MODE",
+            "KEEP_TEMP_FILES",
         }:
             checkbox = QCheckBox("включено")
             checkbox.toggled.connect(
@@ -564,6 +576,7 @@ class MainWindow(QMainWindow):
             "WAIFU2X_UPSCALE_FACTOR",
             "VIDEO_CRF",
             "VIDEO_NVENC_CQ",
+            "INTERMEDIATE_VIDEO_CRF",
             "FRAMES_MULTIPLY_FACTOR",
         }:
             spin = IntStepper()
@@ -574,7 +587,7 @@ class MainWindow(QMainWindow):
                 "FRAMES_MULTIPLY_FACTOR",
             }:
                 spin.setRange(1, 8)
-            if name in {"VIDEO_CRF", "VIDEO_NVENC_CQ"}:
+            if name in {"VIDEO_CRF", "VIDEO_NVENC_CQ", "INTERMEDIATE_VIDEO_CRF"}:
                 spin.setRange(0, 51)
             spin.valueChanged.connect(
                 lambda value, field=name: self._sync_config_from_widget(field, value)
@@ -588,6 +601,7 @@ class MainWindow(QMainWindow):
                 "realesrgan-x4plus",
             ],
             "VIDEO_ENCODER": ["libx264", "h264_nvenc"],
+            "INTERMEDIATE_VIDEO_ENCODER": ["libx264rgb", "libx264", "ffv1"],
             "VIDEO_PRESET": [
                 "ultrafast",
                 "superfast",
@@ -599,7 +613,36 @@ class MainWindow(QMainWindow):
                 "slower",
                 "veryslow",
             ],
+            "VIDEO_TUNE": [
+                "animation",
+                "",
+                "film",
+                "grain",
+                "stillimage",
+                "fastdecode",
+                "zerolatency",
+            ],
+            "INTERMEDIATE_VIDEO_PRESET": [
+                "ultrafast",
+                "superfast",
+                "veryfast",
+                "faster",
+                "fast",
+                "medium",
+                "slow",
+                "slower",
+                "veryslow",
+            ],
             "VIDEO_PIX_FMT": ["yuv420p", "yuv422p", "yuv444p"],
+            "INTERMEDIATE_VIDEO_PIX_FMT": [
+                "bgr24",
+                "rgb24",
+                "bgr0",
+                "yuv420p",
+                "yuv422p",
+                "yuv444p",
+            ],
+            "INTERMEDIATE_VIDEO_CONTAINER": ["mkv", "mp4"],
             "RESOLUTION": ["1080p", "2K", "4K", "8K"],
         }
         if name in combos:
@@ -736,9 +779,7 @@ class MainWindow(QMainWindow):
         input_path = Path(input_text) if input_text else None
         output_dir_text = self.output_dir_edit.text().strip()
         output_dir = (
-            Path(output_dir_text)
-            if output_dir_text
-            else self.data_dir / "output_video"
+            Path(output_dir_text) if output_dir_text else self.data_dir / "output_video"
         )
         stem = input_path.stem if input_path and input_path.stem else "enhanced"
         final_path = output_dir / f"{stem}_enhanced.mp4"
@@ -797,8 +838,7 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(
             self,
             "Выберите папку для итогового видео",
-            self.output_dir_edit.text()
-            or str(self.data_dir / "output_video"),
+            self.output_dir_edit.text() or str(self.data_dir / "output_video"),
         )
         if path:
             self.output_dir_edit.setText(path)
@@ -969,7 +1009,9 @@ class MainWindow(QMainWindow):
 
     def _pipeline_command(self, profile_path: Path) -> tuple[Path, list[str], Path]:
         if is_frozen():
-            helper_name = "AnimeEnhancementCLI.exe" if os.name == "nt" else "AnimeEnhancementCLI"
+            helper_name = (
+                "AnimeEnhancementCLI.exe" if os.name == "nt" else "AnimeEnhancementCLI"
+            )
             helper = app_root() / helper_name
             if helper.exists():
                 return helper, ["--config", str(profile_path)], app_root()
@@ -980,8 +1022,16 @@ class MainWindow(QMainWindow):
         else:
             venv_python = self.project_root / ".venv" / "bin" / "python"
         if venv_python.exists():
-            return venv_python, ["main.py", "--config", str(profile_path)], self.project_root
-        return Path(sys.executable), ["main.py", "--config", str(profile_path)], self.project_root
+            return (
+                venv_python,
+                ["main.py", "--config", str(profile_path)],
+                self.project_root,
+            )
+        return (
+            Path(sys.executable),
+            ["main.py", "--config", str(profile_path)],
+            self.project_root,
+        )
 
     def stop_process(self) -> None:
         if self.process is None:
@@ -1092,10 +1142,26 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Обработка выполняется" if running else "Готово")
 
     def _detect_level(self, text: str) -> str:
+        match = LOG_RECORD_LEVEL_RE.search(text)
+        if match:
+            level = match.group(1)
+            if level == "CRITICAL":
+                return "critical"
+            if level == "ERROR":
+                return "error"
+            if level == "DEBUG":
+                return "debug"
+            return "info"
+
         upper = text.upper()
-        if "CRITICAL" in upper or "КРИТИЧЕСК" in upper:
+        if "КРИТИЧЕСК" in upper:
             return "critical"
-        if "ERROR" in upper or "ОШИБ" in upper:
+        if (
+            "[ОШИБКА]" in upper
+            or upper.startswith("ОШИБ")
+            or " ОШИБКА" in upper
+            or " ОШИБКИ" in upper
+        ):
             return "error"
         if "DEBUG" in upper or "ОТЛАД" in upper:
             return "debug"

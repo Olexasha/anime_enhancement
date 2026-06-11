@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$SkipChecks,
     [switch]$SkipInstaller,
     [switch]$ZipPortable

@@ -37,6 +37,7 @@ def configure_test_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("VIDEO_PRESET", "ultrafast")
     monkeypatch.setenv("VIDEO_PIX_FMT", "yuv420p")
     monkeypatch.setenv("FRAMES_MULTIPLY_FACTOR", "2")
+    monkeypatch.setenv("KEEP_TEMP_FILES", "false")
 
 
 def _is_command_available(command: str) -> bool:

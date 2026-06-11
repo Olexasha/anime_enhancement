@@ -43,10 +43,11 @@ def _probe_video(path):
         "ffprobe",
         "-v",
         "error",
+        "-count_frames",
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=codec_name,width,height,avg_frame_rate,nb_frames,pix_fmt",
+        "stream=codec_name,width,height,avg_frame_rate,nb_read_frames,pix_fmt",
         "-of",
         "json",
         str(path),
@@ -73,9 +74,37 @@ def test_generate_video_from_frames_smoke(monkeypatch, tmp_path):
     )
     video_stream = _probe_video(video_path)
 
+    assert video_path.endswith(".mkv"), "Short-видео должно писаться в MKV"
     assert video_stream["codec_name"] == "h264", "Short-видео должно быть H.264"
-    assert video_stream["pix_fmt"] == "yuv420p", "Пиксельный формат должен быть yuv420p"
+    assert video_stream["pix_fmt"] == "gbrp", (
+        "Short-видео должно быть RGB-lossless transport"
+    )
     assert video_stream["avg_frame_rate"] == "24000/1001", (
         "FPS должен сохраняться дробью"
     )
-    assert video_stream["nb_frames"] == "5", "Количество кадров должно совпадать"
+    assert video_stream["nb_read_frames"] == "5", "Количество кадров должно совпадать"
+
+    decoded = tmp_path / "decoded_frame_1.png"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            video_path,
+            "-frames:v",
+            "1",
+            str(decoded),
+        ],
+        check=True,
+    )
+
+    import cv2
+
+    source_frame = cv2.imread(frame_paths[0])
+    decoded_frame = cv2.imread(str(decoded))
+    assert decoded_frame.shape == source_frame.shape
+    assert (decoded_frame == source_frame).all(), (
+        "RGB-lossless short-видео не должно менять PNG-кадры"
+    )

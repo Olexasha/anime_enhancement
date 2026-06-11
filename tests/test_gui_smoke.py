@@ -158,6 +158,27 @@ def test_gui_main_progress_uses_pipeline_markers_not_any_percent():
     window.close()
 
 
+def test_gui_does_not_mark_ffmpeg_loglevel_argument_as_error():
+    from PySide6.QtWidgets import QApplication
+
+    from gui.main_window import MainWindow
+
+    _app = QApplication.instance() or QApplication([])
+    window = MainWindow(Path(__file__).resolve().parents[1])
+
+    assert (
+        window._detect_level(
+            "[10.06.2026 10:00:00] INFO: Запуск FFmpeg: ffmpeg -loglevel error -i input output"
+        )
+        == "info"
+    )
+    assert (
+        window._detect_level("[10.06.2026 10:00:00] ERROR: ffmpeg failed")
+        == "error"
+    )
+    window.close()
+
+
 def test_gui_logs_can_expand_and_collapse():
     from PySide6.QtWidgets import QApplication
 

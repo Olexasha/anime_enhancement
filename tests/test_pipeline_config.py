@@ -11,6 +11,9 @@ def test_defaults_are_valid_without_input_requirement():
     assert config.ENABLE_INTERPOLATION is True
     assert config.REALESRGAN_MODEL_NAME == "realesr-animevideov3"
     assert config.FRAMES_MULTIPLY_FACTOR == 3
+    assert config.VIDEO_CRF == 10
+    assert config.VIDEO_TUNE == "animation"
+    assert config.VIDEO_PIX_FMT == "yuv444p"
 
 
 def test_json_profile_roundtrip(tmp_path: Path):
@@ -34,15 +37,54 @@ def test_json_profile_roundtrip(tmp_path: Path):
 
 
 def test_env_loading(monkeypatch):
+    monkeypatch.delenv("INTERMEDIATE_VIDEO_ENCODER", raising=False)
+    monkeypatch.delenv("INTERMEDIATE_VIDEO_CONTAINER", raising=False)
     monkeypatch.setenv("ENABLE_DENOISE", "true")
     monkeypatch.setenv("FRAMES_PER_BATCH", "250")
     monkeypatch.setenv("VIDEO_CRF", "17")
+    monkeypatch.setenv("INTERMEDIATE_VIDEO_PIX_FMT", "yuv444p")
 
     config = PipelineConfig.from_env(env_file=Path("missing.env"))
 
     assert config.ENABLE_DENOISE is True
     assert config.FRAMES_PER_BATCH == 250
     assert config.VIDEO_CRF == 17
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_CONTAINER == "mkv"
+
+
+def test_old_profile_migrates_intermediate_transport(tmp_path: Path):
+    profile = tmp_path / "old_profile.json"
+    profile.write_text(
+        """
+        {
+          "version": 1,
+          "settings": {
+            "INTERMEDIATE_VIDEO_CRF": 0,
+            "INTERMEDIATE_VIDEO_PRESET": "ultrafast",
+            "INTERMEDIATE_VIDEO_PIX_FMT": "yuv444p"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = PipelineConfig.from_json(profile)
+
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_CONTAINER == "mkv"
+
+
+def test_env_migrates_stale_intermediate_pix_fmt(monkeypatch):
+    monkeypatch.setenv("INTERMEDIATE_VIDEO_ENCODER", "libx264rgb")
+    monkeypatch.setenv("INTERMEDIATE_VIDEO_PIX_FMT", "yuv444p")
+
+    config = PipelineConfig.from_env(env_file=Path("missing.env"))
+
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
 
 
 def test_validation_detects_directory_final_video(tmp_path: Path):
@@ -71,6 +113,14 @@ def test_max_quality_preset_enables_temporal_tta():
     config = apply_preset(PipelineConfig.defaults(), "Максимальное качество")
 
     assert config.ENABLE_TEMPORAL_TTA_MODE is True
+    assert config.ENABLE_DENOISE is False
+    assert config.VIDEO_CRF == 10
+    assert config.VIDEO_TUNE == "animation"
+    assert config.VIDEO_PIX_FMT == "yuv444p"
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
+    assert config.INTERMEDIATE_VIDEO_CRF == 0
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_CONTAINER == "mkv"
 
 
 def test_parse_bool_russian_values():

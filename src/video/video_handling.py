@@ -14,6 +14,11 @@ from src.config.settings import (
     BATCH_VIDEO_PATH,
     ENABLE_INTERPOLATION,
     FRAMES_MULTIPLY_FACTOR,
+    INTERMEDIATE_VIDEO_CONTAINER,
+    INTERMEDIATE_VIDEO_CRF,
+    INTERMEDIATE_VIDEO_ENCODER,
+    INTERMEDIATE_VIDEO_PIX_FMT,
+    INTERMEDIATE_VIDEO_PRESET,
     INTERPOLATED_BATCHES_DIR,
     KEEP_TEMP_FILES,
     OUTPUT_IMAGE_FORMAT,
@@ -24,6 +29,7 @@ from src.config.settings import (
     VIDEO_NVENC_CQ,
     VIDEO_PIX_FMT,
     VIDEO_PRESET,
+    VIDEO_TUNE,
 )
 from src.files.batch_utils import delete_interpolate_batches, delete_upscale_batches
 from src.files.file_actions import delete_file
@@ -33,7 +39,7 @@ from src.video.video_exceptions import (
     VideoMergingError,
     VideoReadFrameError,
 )
-from src.video.video_helpers import sort_video_paths
+from src.video.video_helpers import sort_frame_paths, sort_video_paths
 
 
 class VideoHandler:
@@ -42,8 +48,9 @@ class VideoHandler:
     автоматическим управлением очередями объединения.
     """
 
-    def __init__(self, fps: float):
+    def __init__(self, fps: float, keep_temp_files: bool = KEEP_TEMP_FILES):
         self.fps = self.__calculate_fps_after_ai(fps)
+        self.keep_temp_files = keep_temp_files
         self.video_queue = multiprocessing.Queue()
         self.final_videos_same_name = 1
 
@@ -64,7 +71,7 @@ class VideoHandler:
         logger.debug("Запуск асинхронного сбора короткого видео")
         process = multiprocessing.Process(
             target=build_short_video_sync,
-            args=(frame_batches, self.fps, self.video_queue),
+            args=(frame_batches, self.fps, self.video_queue, self.keep_temp_files),
         )
         process.start()
 
@@ -101,9 +108,13 @@ class VideoHandler:
 
         try:
             output_video = self._handle_merging(video_paths)
-            if not KEEP_TEMP_FILES:
+            if not self.keep_temp_files:
                 for video_path in video_paths:
                     await delete_file(video_path)
+            else:
+                logger.info(
+                    f"KEEP_TEMP_FILES=true: short-видео сохранены в {BATCH_VIDEO_PATH}"
+                )
             return output_video
         except VideoMergingError as error:
             logger.error(f"Ошибка при сборке видео: {str(error)}")
@@ -122,7 +133,8 @@ class VideoHandler:
         :return: Путь к созданному видеофайлу.
         """
         video_path = os.path.join(
-            BATCH_VIDEO_PATH, f"short_{batch_range_start}-{batch_range_end}.mp4"
+            BATCH_VIDEO_PATH,
+            f"short_{batch_range_start}-{batch_range_end}.{INTERMEDIATE_VIDEO_CONTAINER}",
         )
         Path(BATCH_VIDEO_PATH).mkdir(parents=True, exist_ok=True)
         logger.info(f"Создание видео из {len(frame_paths)} фреймов")
@@ -145,6 +157,7 @@ class VideoHandler:
         frame_path = ""
         try:
             total_frames = len(frame_paths)
+            last_logged_percent = -5.0
             for i, frame_path in enumerate(frame_paths):
                 frame = cv2.imread(frame_path)
                 if frame is None:
@@ -157,13 +170,17 @@ class VideoHandler:
                     del frame
                     gc.collect()
 
-                # выводим прогресс каждые 500 кадров
                 frame_num = i + 1
-                if frame_num % 500 == 0 or frame_num == total_frames:
+                progress_percent = frame_num * 100 / total_frames
+                if (
+                    progress_percent - last_logged_percent >= 5
+                    or frame_num == total_frames
+                ):
                     logger.info(
-                        f"Генерирование короткого видео ({batch_range_start}-"
-                        f"{batch_range_end}): {i + 1}/{total_frames}"
+                        f"FFmpeg short-видео ({batch_range_start}-{batch_range_end}): "
+                        f"{frame_num}/{total_frames} ({progress_percent:.1f}%)"
                     )
+                    last_logged_percent = progress_percent
         except cv2.error as e:
             logger.critical(
                 f"Ошибка при генерировании short видео {batch_range_start}-{batch_range_end}: {str(e)}"
@@ -194,24 +211,13 @@ class VideoHandler:
         # fmt: off
         cmd = ["ffmpeg", "-y", "-loglevel", "error"]
         cmd += ["-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}", "-r", VideoHandler._format_ffmpeg_fps(fps), "-i", "-"]
-        cmd += ["-an", "-pix_fmt", VIDEO_PIX_FMT, "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+        cmd += ["-an"]
         # fmt: on
 
-        if VIDEO_ENCODER == "h264_nvenc":
-            # fmt: off
-            cmd += ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-cq", str(VIDEO_NVENC_CQ), "-b:v", "0"]
-            # fmt: on
-        elif VIDEO_ENCODER == "libx264":
-            # fmt: off
-            cmd += ["-c:v", "libx264", "-preset", VIDEO_PRESET, "-crf", str(VIDEO_CRF)]
-            # fmt: on
-        else:
-            raise ValueError(
-                f"VIDEO_ENCODER={VIDEO_ENCODER} не поддерживается. "
-                "Используйте libx264 или h264_nvenc."
-            )
-
-        cmd += ["-movflags", "+faststart", video_path]
+        cmd += VideoHandler._intermediate_video_encoder_args()
+        if Path(video_path).suffix.lower() == ".mp4":
+            cmd += ["-movflags", "+faststart"]
+        cmd += [video_path]
         logger.info(f"Запуск кодировщика FFmpeg: {' '.join(cmd)}")
         return subprocess.Popen(
             cmd,
@@ -219,6 +225,61 @@ class VideoHandler:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+
+    @staticmethod
+    def _intermediate_video_encoder_args() -> list[str]:
+        """
+        Возвращает параметры ffmpeg для временных short-видео.
+
+        Short-видео являются транспортом между PNG/RIFE и финальным encode.
+        По умолчанию сохраняем RGB без потерь, чтобы не получить block artifacts
+        и YUV-конвертацию до финального кодирования.
+        """
+        if INTERMEDIATE_VIDEO_ENCODER == "libx264rgb":
+            return [
+                "-c:v",
+                "libx264rgb",
+                "-preset",
+                INTERMEDIATE_VIDEO_PRESET,
+                "-crf",
+                str(INTERMEDIATE_VIDEO_CRF),
+                "-pix_fmt",
+                INTERMEDIATE_VIDEO_PIX_FMT,
+            ]
+        if INTERMEDIATE_VIDEO_ENCODER == "libx264":
+            return [
+                "-pix_fmt",
+                INTERMEDIATE_VIDEO_PIX_FMT,
+                "-color_range",
+                "tv",
+                "-colorspace",
+                "bt709",
+                "-color_primaries",
+                "bt709",
+                "-color_trc",
+                "bt709",
+                "-c:v",
+                "libx264",
+                "-preset",
+                INTERMEDIATE_VIDEO_PRESET,
+                "-crf",
+                str(INTERMEDIATE_VIDEO_CRF),
+            ]
+        if INTERMEDIATE_VIDEO_ENCODER == "ffv1":
+            return [
+                "-c:v",
+                "ffv1",
+                "-level",
+                "3",
+                "-g",
+                "1",
+                "-pix_fmt",
+                INTERMEDIATE_VIDEO_PIX_FMT,
+            ]
+        raise ValueError(
+            f"INTERMEDIATE_VIDEO_ENCODER={INTERMEDIATE_VIDEO_ENCODER} не поддерживается. "
+            "Используйте libx264rgb, libx264 или ffv1."
         )
 
     @staticmethod
@@ -247,7 +308,7 @@ class VideoHandler:
         )
         for batch in batches_list:
             batch_path = str(os.path.join(source_dir, batch))
-            frames = sorted(
+            frames = sort_frame_paths(
                 glob.glob(os.path.join(batch_path, f"*.{OUTPUT_IMAGE_FORMAT}"))
             )
             frame_paths.extend(frames)
@@ -282,7 +343,12 @@ class VideoHandler:
         concat_list = Path(TMP_VIDEO_PATH) / f"concat_{first_num}-{last_num}.txt"
         try:
             start_time = time.time()
-            self.__merge_videos_with_ffmpeg(video_paths, output_path, concat_list)
+            self.__merge_videos_with_ffmpeg(
+                video_paths,
+                output_path,
+                concat_list,
+                expected_duration=total_frames / max(self.fps, 0.001),
+            )
             total_time = time.time() - start_time
             logger.info(
                 f"Объединено {len(video_paths)} видео за {total_time:.1f} сек "
@@ -292,7 +358,12 @@ class VideoHandler:
             logger.error(f"Ошибка объединения видео: {str(e)}")
             raise VideoMergingError(f"Ошибка при объединении видео: {e}") from e
         finally:
-            concat_list.unlink(missing_ok=True)
+            if not self.keep_temp_files:
+                concat_list.unlink(missing_ok=True)
+            else:
+                logger.info(
+                    f"KEEP_TEMP_FILES=true: concat list сохранен: {concat_list}"
+                )
             # Очищаем память после завершения
             self._force_memory_cleanup()
 
@@ -303,6 +374,7 @@ class VideoHandler:
         video_paths: list,
         output_path: str,
         concat_list: Path,
+        expected_duration: float,
     ) -> None:
         with concat_list.open("w", encoding="utf-8") as file:
             for video_path in video_paths:
@@ -312,17 +384,68 @@ class VideoHandler:
         # fmt: off
         cmd = ["ffmpeg", "-y", "-loglevel", "error"]
         cmd += ["-f", "concat", "-safe", "0", "-i", str(concat_list)]
-        cmd += ["-c", "copy", output_path]
+        cmd += ["-an", "-pix_fmt", VIDEO_PIX_FMT, "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]
+        if VIDEO_ENCODER == "h264_nvenc":
+            cmd += ["-c:v", "h264_nvenc", "-preset", "p7", "-tune", "hq", "-cq", str(VIDEO_NVENC_CQ), "-b:v", "0"]
+        elif VIDEO_ENCODER == "libx264":
+            cmd += ["-c:v", "libx264", "-preset", VIDEO_PRESET]
+            if VIDEO_TUNE:
+                cmd += ["-tune", VIDEO_TUNE]
+            cmd += ["-crf", str(VIDEO_CRF)]
+        else:
+            raise ValueError(
+                f"VIDEO_ENCODER={VIDEO_ENCODER} не поддерживается. "
+                "Используйте libx264 или h264_nvenc."
+            )
+        cmd += ["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", output_path]
         # fmt: on
-        logger.info(f"Склейка коротких видео без пережатия: {' '.join(cmd)}")
-        result = subprocess.run(
+        logger.info(f"Склейка коротких видео с финальным encode: {' '.join(cmd)}")
+        VideoHandler._run_ffmpeg_with_progress(
             cmd,
-            capture_output=True,
+            expected_duration=expected_duration,
+            desc="FFmpeg финальная сборка видео",
+        )
+
+    @staticmethod
+    def _run_ffmpeg_with_progress(
+        cmd: list[str],
+        expected_duration: float,
+        desc: str,
+    ) -> None:
+        duration = max(0.001, expected_duration)
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
-        if result.returncode != 0:
-            raise VideoMergingError(result.stderr)
+        last_logged_percent = -5.0
+        current_percent = 0.0
+
+        if process.stdout:
+            for line in process.stdout:
+                key, _, value = line.strip().partition("=")
+                if key != "out_time_ms":
+                    continue
+                try:
+                    current_time = max(0.0, int(value) / 1_000_000)
+                except ValueError:
+                    continue
+                current_percent = min(100.0, current_time * 100 / duration)
+                if current_percent - last_logged_percent >= 5:
+                    logger.info(f"{desc}: {current_percent:.1f}%")
+                    last_logged_percent = current_percent
+
+        return_code = process.wait()
+        stderr = process.stderr.read() if process.stderr else ""
+        if return_code != 0:
+            raise VideoMergingError(stderr)
+
+        if current_percent < 100:
+            logger.info(f"{desc}: 100.0%")
 
     @staticmethod
     def __build_video_path(video_name: str, path=BATCH_VIDEO_PATH):
@@ -331,7 +454,10 @@ class VideoHandler:
 
 
 def build_short_video_sync(
-    frame_batches: list, fps: float, video_queue: multiprocessing.Queue
+    frame_batches: list,
+    fps: float,
+    video_queue: multiprocessing.Queue,
+    keep_temp_files: bool = KEEP_TEMP_FILES,
 ) -> None:
     """
     Запускается в отдельном процессе для сборки короткого видео из кадров без ожидания завершения.
@@ -355,7 +481,7 @@ def build_short_video_sync(
         video_queue.put(video_path)
         logger.info(f"Видео добавлено в очередь: {video_path}")
         logger.success(f"Short видео создано: {video_path} (FPS: {fps})")
-        if not KEEP_TEMP_FILES:
+        if not keep_temp_files:
             if ENABLE_INTERPOLATION:
                 asyncio.run(
                     delete_interpolate_batches(
@@ -366,6 +492,11 @@ def build_short_video_sync(
                 asyncio.run(
                     delete_upscale_batches(int(batch_range_start), int(batch_range_end))
                 )
+        else:
+            logger.info(
+                "KEEP_TEMP_FILES=true: исходные кадры для short-видео сохранены "
+                f"для батчей {batch_range_start}-{batch_range_end}"
+            )
     else:
         logger.critical("Не удалось создать видео из фреймов")
         raise VideoReadFrameError("Не удалось создать видео из фреймов")

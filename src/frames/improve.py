@@ -214,8 +214,10 @@ async def monitor_progress(
         total_frames = total_frames * FRAMES_MULTIPLY_FACTOR
     total_frames = max(1, total_frames)
 
-    last_logged = 0
-    log_interval = 20  # логировать каждые n секунд
+    last_logged = 0.0
+    last_logged_percent = -5.0
+    log_interval = 10  # логировать каждые n секунд
+    poll_interval = 2  # проверять появление новых кадров чаще, чем логировать
 
     while is_processing[0]:
         try:
@@ -230,6 +232,7 @@ async def monitor_progress(
                 current_time = time.time()
                 if (
                     current_time - last_logged >= log_interval
+                    or progress_percent - last_logged_percent >= 5
                     or progress_percent >= 100
                     or processed_frames == total_frames
                 ):
@@ -245,9 +248,10 @@ async def monitor_progress(
                         f"Прошло: {elapsed:.1f}сек | Осталось: {remaining:.1f}сек"
                     )
                     last_logged = current_time
+                    last_logged_percent = progress_percent
             if processed_frames >= total_frames:
                 break
-            await asyncio.sleep(log_interval)
+            await asyncio.sleep(poll_interval)
         except Exception as error:
             logger.error(f"Ошибка мониторинга прогресса: {str(error)}")
             await asyncio.sleep(1)

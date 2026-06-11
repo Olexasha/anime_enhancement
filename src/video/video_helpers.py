@@ -4,6 +4,8 @@ import cv2
 
 from src.utils.logger import logger
 
+FRAME_NUMBER_PATTERN = re.compile(r"(\d+)(?=\.[^.]+$)")
+
 
 def get_video_duration(
     video_path: str, return_fps_too: bool = False
@@ -37,7 +39,17 @@ def sort_video_paths(paths: list[str]) -> list[str]:
 
     def __extract_numbers(item: str) -> int:
         path = item
-        match = re.search(r"(\d+)-(\d+)\.mp4$", path)
+        match = re.search(r"(\d+)-(\d+)\.[^.\\/]+$", path)
         return int(match.group(1)) if match else 0
 
     return sorted(paths, key=__extract_numbers)
+
+
+def sort_frame_paths(paths: list[str]) -> list[str]:
+    """Сортирует пути кадров по числу в имени файла, а не лексикографически."""
+
+    def __extract_number(item: str) -> tuple[int, str]:
+        match = FRAME_NUMBER_PATTERN.search(item)
+        return int(match.group(1)) if match else -1, item
+
+    return sorted(paths, key=__extract_number)

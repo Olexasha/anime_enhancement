@@ -6,6 +6,7 @@ from src.audio.audio_helpers import run_ffmpeg_command_with_progress
 from src.config.settings import (
     AUDIO_PATH,
     FINAL_VIDEO,
+    KEEP_TEMP_FILES,
     ORIGINAL_VIDEO,
     RESOLUTION,
     TMP_VIDEO_PATH,
@@ -33,6 +34,7 @@ class AudioHandler:
         audio_path: str = AUDIO_PATH,
         audio_format: str = "copy",
         resolution: str = RESOLUTION,
+        keep_temp_files: bool = KEEP_TEMP_FILES,
     ):
         self.threads = threads
         self.in_video_path = input_video_path
@@ -41,6 +43,7 @@ class AudioHandler:
         self.audio_path = audio_path
         self.audio_format = audio_format
         self.resolution = resolution
+        self.keep_temp_files = keep_temp_files
         self.copy_original_audio = self.audio_format == "copy"
         self.codec = (
             "copy"
@@ -153,6 +156,10 @@ class AudioHandler:
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка при добавлении аудио: {str(e)}")
             raise
+
+        if self.keep_temp_files:
+            logger.info("KEEP_TEMP_FILES=true: временные файлы не удаляются")
+            return
 
         # очистка временных файлов
         if not self.copy_original_audio:

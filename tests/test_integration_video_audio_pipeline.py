@@ -17,7 +17,7 @@ def _probe(path):
         "-v",
         "error",
         "-show_entries",
-        "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,nb_frames",
+        "format=duration:stream=codec_type,codec_name,width,height,avg_frame_rate,nb_frames,pix_fmt",
         "-of",
         "json",
         str(path),
@@ -104,9 +104,58 @@ def test_video_concat_and_audio_copy_pipeline(monkeypatch, tmp_path):
     final_audio = _stream(final_probe, "audio")
 
     assert final_video["codec_name"] == "h264", "Видео должно остаться H.264"
+    assert final_video["pix_fmt"] == "yuv420p", (
+        "Финальное видео должно кодироваться один раз в совместимый yuv420p"
+    )
     assert final_audio["codec_name"] == original_audio["codec_name"], (
         "Аудио должно копироваться"
     )
     assert final_video["avg_frame_rate"] == "24000/1001", "FPS не должен дрейфовать"
     assert final_video["nb_frames"] == original_video["nb_frames"] == "48"
     assert final_probe["format"]["duration"] == original_probe["format"]["duration"]
+
+
+def test_keep_temp_files_preserves_short_and_merged_videos(monkeypatch, tmp_path):
+    """KEEP_TEMP_FILES=true не должен удалять short-видео и merged-видео."""
+    require_video_tools()
+    configure_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("KEEP_TEMP_FILES", "true")
+    video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.files.batch_utils",
+        "src.video.video_handling",
+    )[2]
+    audio_handling = reload_project_modules("src.audio.audio_handling")[0]
+
+    frame_dir = tmp_path / "source_frames"
+    frame_paths = _write_png_frames(frame_dir, count=48)
+    original_path = tmp_path / "original.mp4"
+    final_path = tmp_path / "final.mp4"
+    _create_original_with_audio(frame_dir, original_path)
+
+    video = video_handling.VideoHandler(fps=24000 / 1001, keep_temp_files=True)
+    first_part = video.generate_video_from_frames(frame_paths[:24], "1", "1", video.fps)
+    second_part = video.generate_video_from_frames(
+        frame_paths[24:], "2", "2", video.fps
+    )
+    video.video_queue.put(first_part)
+    video.video_queue.put(second_part)
+
+    merged_path = asyncio.run(video.build_final_video(total_short_videos=2))
+
+    assert merged_path is not None
+    assert (tmp_path / "data" / "video_batches" / "short_1-1.mkv").is_file()
+    assert (tmp_path / "data" / "video_batches" / "short_2-2.mkv").is_file()
+    assert (tmp_path / "data" / "tmp_video" / "merged_1-2.mp4").is_file()
+
+    audio = audio_handling.AudioHandler(
+        threads=2,
+        input_video_path=str(original_path),
+        merged_video_path=merged_path,
+        output_video_path=str(final_path),
+        keep_temp_files=True,
+    )
+    asyncio.run(audio.insert_audio())
+
+    assert final_path.is_file()
+    assert (tmp_path / "data" / "tmp_video" / "merged_1-2.mp4").is_file()

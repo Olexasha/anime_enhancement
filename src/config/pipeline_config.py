@@ -63,10 +63,16 @@ class PipelineConfig:
     DENOISE_FACTOR: int = 3
     WAIFU2X_UPSCALE_FACTOR: int = 1
     VIDEO_ENCODER: str = "libx264"
-    VIDEO_CRF: int = 16
+    VIDEO_CRF: int = 10
     VIDEO_PRESET: str = "slow"
+    VIDEO_TUNE: str = "animation"
     VIDEO_NVENC_CQ: int = 16
-    VIDEO_PIX_FMT: str = "yuv420p"
+    VIDEO_PIX_FMT: str = "yuv444p"
+    INTERMEDIATE_VIDEO_ENCODER: str = "libx264rgb"
+    INTERMEDIATE_VIDEO_CRF: int = 0
+    INTERMEDIATE_VIDEO_PRESET: str = "ultrafast"
+    INTERMEDIATE_VIDEO_PIX_FMT: str = "bgr24"
+    INTERMEDIATE_VIDEO_CONTAINER: str = "mkv"
     FRAMES_MULTIPLY_FACTOR: int = 3
     ENABLE_UHD_MODE: bool = True
     ENABLE_SPATIAL_TTA_MODE: bool = False
@@ -93,7 +99,7 @@ class PipelineConfig:
             raw = os.getenv(field.name)
             if raw is not None:
                 values[field.name] = _coerce_value(raw, field.type)
-        return cls(**values)
+        return cls(**_migrate_profile_payload(values))
 
     @classmethod
     def from_json(cls, path: str | Path) -> PipelineConfig:
@@ -114,6 +120,7 @@ class PipelineConfig:
         if not isinstance(payload, dict):
             raise ValueError("Профиль настроек должен быть JSON-объектом")
 
+        payload = _migrate_profile_payload(payload)
         allowed = {field.name for field in fields(cls)}
         values = {
             key: _coerce_value(
@@ -185,10 +192,70 @@ class PipelineConfig:
             errors.append("VIDEO_ENCODER должен быть libx264 или h264_nvenc")
         if not 0 <= self.VIDEO_CRF <= 51:
             errors.append("VIDEO_CRF должен быть от 0 до 51")
+        if self.VIDEO_TUNE not in {
+            "",
+            "film",
+            "animation",
+            "grain",
+            "stillimage",
+            "fastdecode",
+            "zerolatency",
+        }:
+            errors.append(
+                "VIDEO_TUNE должен быть пустым или одним из: film, animation, "
+                "grain, stillimage, fastdecode, zerolatency"
+            )
         if not 0 <= self.VIDEO_NVENC_CQ <= 51:
             errors.append("VIDEO_NVENC_CQ должен быть от 0 до 51")
         if self.VIDEO_PIX_FMT not in {"yuv420p", "yuv422p", "yuv444p"}:
             errors.append("VIDEO_PIX_FMT должен быть yuv420p, yuv422p или yuv444p")
+        if self.INTERMEDIATE_VIDEO_ENCODER not in {
+            "libx264rgb",
+            "libx264",
+            "ffv1",
+        }:
+            errors.append(
+                "INTERMEDIATE_VIDEO_ENCODER должен быть libx264rgb, libx264 или ffv1"
+            )
+        if not 0 <= self.INTERMEDIATE_VIDEO_CRF <= 51:
+            errors.append("INTERMEDIATE_VIDEO_CRF должен быть от 0 до 51")
+        if self.INTERMEDIATE_VIDEO_PIX_FMT not in {
+            "bgr24",
+            "rgb24",
+            "bgr0",
+            "yuv420p",
+            "yuv422p",
+            "yuv444p",
+        }:
+            errors.append(
+                "INTERMEDIATE_VIDEO_PIX_FMT должен быть bgr24, rgb24, bgr0, "
+                "yuv420p, yuv422p или yuv444p"
+            )
+        if self.INTERMEDIATE_VIDEO_CONTAINER not in {"mkv", "mp4"}:
+            errors.append("INTERMEDIATE_VIDEO_CONTAINER должен быть mkv или mp4")
+        if (
+            self.INTERMEDIATE_VIDEO_ENCODER == "ffv1"
+            and self.INTERMEDIATE_VIDEO_CONTAINER != "mkv"
+        ):
+            errors.append("ffv1 для short-видео поддерживается только в контейнере mkv")
+        if self.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb":
+            if self.INTERMEDIATE_VIDEO_PIX_FMT not in {"bgr24", "rgb24", "bgr0"}:
+                errors.append(
+                    "libx264rgb для short-видео требует INTERMEDIATE_VIDEO_PIX_FMT "
+                    "bgr24, rgb24 или bgr0"
+                )
+            if self.INTERMEDIATE_VIDEO_CONTAINER != "mkv":
+                errors.append("libx264rgb для short-видео должен использовать mkv")
+        if self.INTERMEDIATE_VIDEO_ENCODER == "libx264":
+            if self.INTERMEDIATE_VIDEO_PIX_FMT not in {
+                "yuv420p",
+                "yuv422p",
+                "yuv444p",
+            }:
+                errors.append(
+                    "libx264 для short-видео требует INTERMEDIATE_VIDEO_PIX_FMT "
+                    "yuv420p, yuv422p или yuv444p"
+                )
         if self.FRAMES_MULTIPLY_FACTOR < 1:
             errors.append("FRAMES_MULTIPLY_FACTOR должен быть больше 0")
         return errors
@@ -202,6 +269,21 @@ def _coerce_value(value: Any, target_type: Any) -> Any:
     if target_type in {float, "float"}:
         return float(value)
     return str(value)
+
+
+def _migrate_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Мигрирует старые JSON-профили на RGB-lossless short-video defaults."""
+    migrated = dict(payload)
+    if "INTERMEDIATE_VIDEO_ENCODER" not in migrated:
+        migrated["INTERMEDIATE_VIDEO_ENCODER"] = "libx264rgb"
+    if (
+        migrated.get("INTERMEDIATE_VIDEO_ENCODER") == "libx264rgb"
+        and str(migrated.get("INTERMEDIATE_VIDEO_PIX_FMT", "")).startswith("yuv")
+    ):
+        migrated["INTERMEDIATE_VIDEO_PIX_FMT"] = "bgr24"
+    if "INTERMEDIATE_VIDEO_CONTAINER" not in migrated:
+        migrated["INTERMEDIATE_VIDEO_CONTAINER"] = "mkv"
+    return migrated
 
 
 def _serialize_env_value(value: Any) -> str:
@@ -245,8 +327,14 @@ FIELD_TOOLTIPS: dict[str, str] = {
     "VIDEO_ENCODER": "Кодировщик ffmpeg: libx264 для качества/совместимости или h264_nvenc для скорости.",
     "VIDEO_CRF": "Качество libx264. Ниже значение означает выше качество и больше файл.",
     "VIDEO_PRESET": "Пресет libx264. slow дает хорошее качество при разумной скорости.",
+    "VIDEO_TUNE": "Профиль психовизуальной настройки libx264. animation лучше подходит для аниме и плоских заливок.",
     "VIDEO_NVENC_CQ": "Качество h264_nvenc. Обычно 15-16 для быстрого варианта.",
-    "VIDEO_PIX_FMT": "Формат пикселей финального видео. yuv420p наиболее совместим.",
+    "VIDEO_PIX_FMT": "Формат пикселей финального видео. yuv444p сохраняет цветовую детализацию, yuv420p более совместим.",
+    "INTERMEDIATE_VIDEO_ENCODER": "Кодировщик временных short-видео. libx264rgb сохраняет RGB-кадры без потерь до финального encode.",
+    "INTERMEDIATE_VIDEO_CRF": "CRF для временных short-видео. 0 сохраняет lossless transport.",
+    "INTERMEDIATE_VIDEO_PRESET": "Пресет libx264 для временных short-видео. ultrafast ускоряет lossless transport.",
+    "INTERMEDIATE_VIDEO_PIX_FMT": "Формат пикселей временных short-видео. bgr24 с libx264rgb сохраняет кадры пиксельно.",
+    "INTERMEDIATE_VIDEO_CONTAINER": "Контейнер временных short-видео. mkv надежнее для RGB-lossless transport.",
     "FRAMES_MULTIPLY_FACTOR": "Во сколько раз увеличить FPS при интерполяции.",
     "ENABLE_UHD_MODE": "UHD-режим RIFE для высокого разрешения.",
     "ENABLE_SPATIAL_TTA_MODE": "Spatial TTA повышает качество, но сильно замедляет обработку.",
@@ -264,9 +352,15 @@ PRESETS: dict[str, dict[str, Any]] = {
         "REALESRGAN_MODEL_NAME": "realesr-animevideov3",
         "UPSCALE_FACTOR": 3,
         "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 16,
+        "VIDEO_CRF": 10,
         "VIDEO_PRESET": "slow",
-        "VIDEO_PIX_FMT": "yuv420p",
+        "VIDEO_TUNE": "animation",
+        "VIDEO_PIX_FMT": "yuv444p",
+        "INTERMEDIATE_VIDEO_ENCODER": "libx264rgb",
+        "INTERMEDIATE_VIDEO_CRF": 0,
+        "INTERMEDIATE_VIDEO_PRESET": "ultrafast",
+        "INTERMEDIATE_VIDEO_PIX_FMT": "bgr24",
+        "INTERMEDIATE_VIDEO_CONTAINER": "mkv",
         "ENABLE_UHD_MODE": True,
         "ENABLE_TEMPORAL_TTA_MODE": True,
     },
@@ -289,6 +383,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "VIDEO_ENCODER": "libx264",
         "VIDEO_CRF": 18,
         "VIDEO_PRESET": "medium",
+        "VIDEO_TUNE": "animation",
         "ENABLE_UHD_MODE": False,
     },
     "Только апскейл": {
@@ -297,15 +392,17 @@ PRESETS: dict[str, dict[str, Any]] = {
         "FRAMES_MULTIPLY_FACTOR": 1,
         "UPSCALE_FACTOR": 3,
         "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 16,
+        "VIDEO_CRF": 10,
         "VIDEO_PRESET": "slow",
+        "VIDEO_TUNE": "animation",
     },
     "Без интерполяции": {
         "ENABLE_INTERPOLATION": False,
         "FRAMES_MULTIPLY_FACTOR": 1,
         "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 16,
+        "VIDEO_CRF": 10,
         "VIDEO_PRESET": "slow",
+        "VIDEO_TUNE": "animation",
     },
 }
 
