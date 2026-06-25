@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 
 from src.config.dependency_checker import check_environment, format_report, has_errors
 from src.config.pipeline_config import (
+    FIELD_LABELS,
     FIELD_TOOLTIPS,
     PRESETS,
     PipelineConfig,
@@ -74,12 +75,6 @@ DETAIL_FIELDS = [
     "UPSCALE_FACTOR",
     "DENOISE_FACTOR",
     "WAIFU2X_UPSCALE_FACTOR",
-    "VIDEO_ENCODER",
-    "VIDEO_CRF",
-    "VIDEO_PRESET",
-    "VIDEO_TUNE",
-    "VIDEO_NVENC_CQ",
-    "VIDEO_PIX_FMT",
     "INTERMEDIATE_VIDEO_ENCODER",
     "INTERMEDIATE_VIDEO_CRF",
     "INTERMEDIATE_VIDEO_PRESET",
@@ -217,6 +212,7 @@ class MainWindow(QMainWindow):
         self.pending_log_render = False
         self.saved_splitter_sizes: list[int] | None = None
         self.detail_widgets: dict[str, Any] = {}
+        self.detail_labels: dict[str, QLabel] = {}
 
         self.setWindowTitle("Anime Enhancement")
         self._apply_window_icon()
@@ -413,17 +409,6 @@ class MainWindow(QMainWindow):
             self.simple_interpolation,
         )
 
-        self.simple_encoder = QComboBox()
-        self.simple_encoder.setToolTip(FIELD_TOOLTIPS["VIDEO_ENCODER"])
-        self.simple_encoder.addItems(["libx264", "h264_nvenc"])
-        self.simple_encoder.currentTextChanged.connect(
-            lambda value: self._set_text_field("VIDEO_ENCODER", value)
-        )
-        form.addRow(
-            self._form_label("Кодировщик", FIELD_TOOLTIPS["VIDEO_ENCODER"]),
-            self.simple_encoder,
-        )
-
         layout.addWidget(group)
         note = QLabel(
             "Пресет сверху является главным: при его смене обновляются быстрые и подробные параметры."
@@ -450,7 +435,12 @@ class MainWindow(QMainWindow):
             widget = self._create_detail_widget(name)
             widget.setToolTip(FIELD_TOOLTIPS.get(name, name))
             self.detail_widgets[name] = widget
-            form.addRow(self._form_label(name, FIELD_TOOLTIPS.get(name, name)), widget)
+            label = self._form_label(
+                FIELD_LABELS.get(name, name),
+                FIELD_TOOLTIPS.get(name, name),
+            )
+            self.detail_labels[name] = label
+            form.addRow(label, widget)
         layout.addWidget(group)
         layout.addStretch()
         scroll.setWidget(page)
@@ -574,8 +564,6 @@ class MainWindow(QMainWindow):
             "UPSCALE_FACTOR",
             "DENOISE_FACTOR",
             "WAIFU2X_UPSCALE_FACTOR",
-            "VIDEO_CRF",
-            "VIDEO_NVENC_CQ",
             "INTERMEDIATE_VIDEO_CRF",
             "FRAMES_MULTIPLY_FACTOR",
         }:
@@ -587,7 +575,7 @@ class MainWindow(QMainWindow):
                 "FRAMES_MULTIPLY_FACTOR",
             }:
                 spin.setRange(1, 8)
-            if name in {"VIDEO_CRF", "VIDEO_NVENC_CQ", "INTERMEDIATE_VIDEO_CRF"}:
+            if name == "INTERMEDIATE_VIDEO_CRF":
                 spin.setRange(0, 51)
             spin.valueChanged.connect(
                 lambda value, field=name: self._sync_config_from_widget(field, value)
@@ -600,28 +588,7 @@ class MainWindow(QMainWindow):
                 "realesrgan-x4plus-anime",
                 "realesrgan-x4plus",
             ],
-            "VIDEO_ENCODER": ["libx264", "h264_nvenc"],
-            "INTERMEDIATE_VIDEO_ENCODER": ["libx264rgb", "libx264", "ffv1"],
-            "VIDEO_PRESET": [
-                "ultrafast",
-                "superfast",
-                "veryfast",
-                "faster",
-                "fast",
-                "medium",
-                "slow",
-                "slower",
-                "veryslow",
-            ],
-            "VIDEO_TUNE": [
-                "animation",
-                "",
-                "film",
-                "grain",
-                "stillimage",
-                "fastdecode",
-                "zerolatency",
-            ],
+            "INTERMEDIATE_VIDEO_ENCODER": ["libx264"],
             "INTERMEDIATE_VIDEO_PRESET": [
                 "ultrafast",
                 "superfast",
@@ -633,11 +600,7 @@ class MainWindow(QMainWindow):
                 "slower",
                 "veryslow",
             ],
-            "VIDEO_PIX_FMT": ["yuv420p", "yuv422p", "yuv444p"],
             "INTERMEDIATE_VIDEO_PIX_FMT": [
-                "bgr24",
-                "rgb24",
-                "bgr0",
                 "yuv420p",
                 "yuv422p",
                 "yuv444p",
@@ -688,19 +651,16 @@ class MainWindow(QMainWindow):
         preset_blocker = QSignalBlocker(self.primary_preset_combo)
         denoise_blocker = QSignalBlocker(self.simple_denoise)
         interpolation_blocker = QSignalBlocker(self.simple_interpolation)
-        encoder_blocker = QSignalBlocker(self.simple_encoder)
         self.input_edit.setText(config.ORIGINAL_VIDEO)
         self.output_dir_edit.setText(str(Path(config.FINAL_VIDEO).parent))
         self.primary_preset_combo.setCurrentText(self._matching_preset_name(config))
         self.simple_denoise.setChecked(config.ENABLE_DENOISE)
         self.simple_interpolation.setChecked(config.ENABLE_INTERPOLATION)
-        self.simple_encoder.setCurrentText(config.VIDEO_ENCODER)
         del input_blocker
         del output_blocker
         del preset_blocker
         del denoise_blocker
         del interpolation_blocker
-        del encoder_blocker
         self._update_final_video_from_primary_fields()
 
         values = self.config.to_dict()

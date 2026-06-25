@@ -11,7 +11,11 @@ from src.config.settings import (
     RESOLUTION,
     TMP_VIDEO_PATH,
 )
-from src.files.file_actions import delete_file
+from src.utils.cleanup import (
+    cleanup_path,
+    maybe_cleanup_after_stage,
+    verify_video_readable,
+)
 from src.utils.logger import logger
 from src.video.video_helpers import get_video_duration
 
@@ -157,15 +161,30 @@ class AudioHandler:
             logger.error(f"Ошибка при добавлении аудио: {str(e)}")
             raise
 
-        if self.keep_temp_files:
-            logger.info("KEEP_TEMP_FILES=true: временные файлы не удаляются")
-            return
+        min_final_duration = max(0.001, duration * 0.95)
+        if not verify_video_readable(
+            self.out_video_path,
+            require_audio=True,
+            min_duration=min_final_duration,
+        ):
+            raise RuntimeError(
+                f"Итоговое видео не прошло проверку ffprobe: {self.out_video_path}"
+            )
 
-        # очистка временных файлов
+        cleanup_paths = [self.tmp_video_path]
         if not self.copy_original_audio:
-            await delete_file(audio_input)
-        await delete_file(self.tmp_video_path)
-        logger.debug("Временные файлы удалены")
+            cleanup_paths.append(audio_input)
+        await asyncio.to_thread(
+            maybe_cleanup_after_stage,
+            stage="Финальная сборка с аудио",
+            paths=cleanup_paths,
+            reason="итоговый файл создан и читается, удаляем временные audio/merged-video",
+            keep_temp_files=self.keep_temp_files,
+            dependency_path=self.out_video_path,
+            dependency_is_video=True,
+            require_audio=True,
+            min_duration=min_final_duration,
+        )
 
     def get_audio_full_path(self) -> str:
         """
@@ -184,7 +203,11 @@ class AudioHandler:
         if audio_path is None:
             audio_path = self.get_audio_full_path()
         if os.path.exists(audio_path):
-            await delete_file(audio_path)
+            await asyncio.to_thread(
+                cleanup_path,
+                audio_path,
+                "предварительная очистка временного аудиофайла",
+            )
             logger.info(f"Аудиофайл удален: {audio_path}")
         else:
             logger.debug(f"Аудиофайл не найден: {audio_path}")

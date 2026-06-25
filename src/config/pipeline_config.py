@@ -62,16 +62,10 @@ class PipelineConfig:
     UPSCALE_FACTOR: int = 3
     DENOISE_FACTOR: int = 3
     WAIFU2X_UPSCALE_FACTOR: int = 1
-    VIDEO_ENCODER: str = "libx264"
-    VIDEO_CRF: int = 10
-    VIDEO_PRESET: str = "slow"
-    VIDEO_TUNE: str = "animation"
-    VIDEO_NVENC_CQ: int = 16
-    VIDEO_PIX_FMT: str = "yuv444p"
-    INTERMEDIATE_VIDEO_ENCODER: str = "libx264rgb"
-    INTERMEDIATE_VIDEO_CRF: int = 0
-    INTERMEDIATE_VIDEO_PRESET: str = "ultrafast"
-    INTERMEDIATE_VIDEO_PIX_FMT: str = "bgr24"
+    INTERMEDIATE_VIDEO_ENCODER: str = "libx264"
+    INTERMEDIATE_VIDEO_CRF: int = 12
+    INTERMEDIATE_VIDEO_PRESET: str = "medium"
+    INTERMEDIATE_VIDEO_PIX_FMT: str = "yuv444p"
     INTERMEDIATE_VIDEO_CONTAINER: str = "mkv"
     FRAMES_MULTIPLY_FACTOR: int = 3
     ENABLE_UHD_MODE: bool = True
@@ -188,35 +182,8 @@ class PipelineConfig:
             errors.append("DENOISE_FACTOR должен быть от -1 до 3")
         if self.WAIFU2X_UPSCALE_FACTOR not in {1, 2}:
             errors.append("WAIFU2X_UPSCALE_FACTOR должен быть 1 или 2")
-        if self.VIDEO_ENCODER not in {"libx264", "h264_nvenc"}:
-            errors.append("VIDEO_ENCODER должен быть libx264 или h264_nvenc")
-        if not 0 <= self.VIDEO_CRF <= 51:
-            errors.append("VIDEO_CRF должен быть от 0 до 51")
-        if self.VIDEO_TUNE not in {
-            "",
-            "film",
-            "animation",
-            "grain",
-            "stillimage",
-            "fastdecode",
-            "zerolatency",
-        }:
-            errors.append(
-                "VIDEO_TUNE должен быть пустым или одним из: film, animation, "
-                "grain, stillimage, fastdecode, zerolatency"
-            )
-        if not 0 <= self.VIDEO_NVENC_CQ <= 51:
-            errors.append("VIDEO_NVENC_CQ должен быть от 0 до 51")
-        if self.VIDEO_PIX_FMT not in {"yuv420p", "yuv422p", "yuv444p"}:
-            errors.append("VIDEO_PIX_FMT должен быть yuv420p, yuv422p или yuv444p")
-        if self.INTERMEDIATE_VIDEO_ENCODER not in {
-            "libx264rgb",
-            "libx264",
-            "ffv1",
-        }:
-            errors.append(
-                "INTERMEDIATE_VIDEO_ENCODER должен быть libx264rgb, libx264 или ffv1"
-            )
+        if self.INTERMEDIATE_VIDEO_ENCODER != "libx264":
+            errors.append("INTERMEDIATE_VIDEO_ENCODER должен быть libx264")
         if not 0 <= self.INTERMEDIATE_VIDEO_CRF <= 51:
             errors.append("INTERMEDIATE_VIDEO_CRF должен быть от 0 до 51")
         if self.INTERMEDIATE_VIDEO_PIX_FMT not in {
@@ -233,19 +200,6 @@ class PipelineConfig:
             )
         if self.INTERMEDIATE_VIDEO_CONTAINER not in {"mkv", "mp4"}:
             errors.append("INTERMEDIATE_VIDEO_CONTAINER должен быть mkv или mp4")
-        if (
-            self.INTERMEDIATE_VIDEO_ENCODER == "ffv1"
-            and self.INTERMEDIATE_VIDEO_CONTAINER != "mkv"
-        ):
-            errors.append("ffv1 для short-видео поддерживается только в контейнере mkv")
-        if self.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb":
-            if self.INTERMEDIATE_VIDEO_PIX_FMT not in {"bgr24", "rgb24", "bgr0"}:
-                errors.append(
-                    "libx264rgb для short-видео требует INTERMEDIATE_VIDEO_PIX_FMT "
-                    "bgr24, rgb24 или bgr0"
-                )
-            if self.INTERMEDIATE_VIDEO_CONTAINER != "mkv":
-                errors.append("libx264rgb для short-видео должен использовать mkv")
         if self.INTERMEDIATE_VIDEO_ENCODER == "libx264":
             if self.INTERMEDIATE_VIDEO_PIX_FMT not in {
                 "yuv420p",
@@ -272,17 +226,18 @@ def _coerce_value(value: Any, target_type: Any) -> Any:
 
 
 def _migrate_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Мигрирует старые JSON-профили на RGB-lossless short-video defaults."""
+    """Мигрирует старые JSON-профили на текущий stream-copy video-master."""
     migrated = dict(payload)
-    if "INTERMEDIATE_VIDEO_ENCODER" not in migrated:
-        migrated["INTERMEDIATE_VIDEO_ENCODER"] = "libx264rgb"
-    if (
-        migrated.get("INTERMEDIATE_VIDEO_ENCODER") == "libx264rgb"
-        and str(migrated.get("INTERMEDIATE_VIDEO_PIX_FMT", "")).startswith("yuv")
-    ):
-        migrated["INTERMEDIATE_VIDEO_PIX_FMT"] = "bgr24"
-    if "INTERMEDIATE_VIDEO_CONTAINER" not in migrated:
-        migrated["INTERMEDIATE_VIDEO_CONTAINER"] = "mkv"
+    migrated["INTERMEDIATE_VIDEO_ENCODER"] = "libx264"
+    migrated["INTERMEDIATE_VIDEO_PRESET"] = "medium"
+    migrated["INTERMEDIATE_VIDEO_PIX_FMT"] = "yuv444p"
+    migrated["INTERMEDIATE_VIDEO_CONTAINER"] = "mkv"
+    try:
+        intermediate_crf = int(migrated.get("INTERMEDIATE_VIDEO_CRF", 0))
+    except (TypeError, ValueError):
+        intermediate_crf = 0
+    if intermediate_crf in {0, 14}:
+        migrated["INTERMEDIATE_VIDEO_CRF"] = 12
     return migrated
 
 
@@ -310,37 +265,59 @@ def configure_app_local_tools(project_root: Path | None = None) -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+FIELD_LABELS: dict[str, str] = {
+    "ORIGINAL_VIDEO": "Исходное видео",
+    "FINAL_VIDEO": "Итоговый файл",
+    "RESOLUTION": "Целевое качество",
+    "START_BATCH_TO_IMPROVE": "Начальный батч",
+    "END_BATCH_TO_IMPROVE": "Конечный батч",
+    "FRAMES_PER_BATCH": "Кадров в батче",
+    "OUTPUT_IMAGE_FORMAT": "Формат кадров",
+    "ENABLE_DENOISE": "Денойз перед апскейлом",
+    "ENABLE_INTERPOLATION": "Интерполяция кадров",
+    "REALESRGAN_MODEL_NAME": "Модель апскейла",
+    "UPSCALE_FACTOR": "Множитель апскейла",
+    "DENOISE_FACTOR": "Сила денойза",
+    "WAIFU2X_UPSCALE_FACTOR": "Множитель waifu2x",
+    "INTERMEDIATE_VIDEO_ENCODER": "Кодировщик short-видео",
+    "INTERMEDIATE_VIDEO_CRF": "Качество short-видео",
+    "INTERMEDIATE_VIDEO_PRESET": "Сжатие short-видео",
+    "INTERMEDIATE_VIDEO_PIX_FMT": "Формат пикселей short-видео",
+    "INTERMEDIATE_VIDEO_CONTAINER": "Контейнер short-видео",
+    "FRAMES_MULTIPLY_FACTOR": "Множитель FPS",
+    "ENABLE_UHD_MODE": "UHD-режим RIFE",
+    "ENABLE_SPATIAL_TTA_MODE": "Spatial TTA RIFE",
+    "ENABLE_TEMPORAL_TTA_MODE": "Temporal TTA RIFE",
+    "KEEP_TEMP_FILES": "Сохранять временные файлы",
+    "LOG_LEVEL": "Подробность логов",
+}
+
+
 FIELD_TOOLTIPS: dict[str, str] = {
-    "ORIGINAL_VIDEO": "Путь к исходному видеофайлу.",
-    "FINAL_VIDEO": "Полный путь к итоговому видеофайлу. Это файл, не папка.",
-    "RESOLUTION": "Человекочитаемая метка целевого качества для логов и профиля.",
-    "START_BATCH_TO_IMPROVE": "Номер первого батча кадров для обработки.",
-    "END_BATCH_TO_IMPROVE": "Номер последнего батча. 0 означает автоопределение всех батчей.",
-    "FRAMES_PER_BATCH": "Количество кадров в одном батче. Меньше значение снижает пик нагрузки.",
-    "OUTPUT_IMAGE_FORMAT": "Формат промежуточных кадров. PNG рекомендуется для качества.",
-    "ENABLE_DENOISE": "Включает предварительный денойз через waifu2x. По умолчанию выключено.",
-    "ENABLE_INTERPOLATION": "Включает интерполяцию кадров через RIFE.",
-    "REALESRGAN_MODEL_NAME": "Модель RealESRGAN для апскейла. Для аниме рекомендуется realesr-animevideov3.",
-    "UPSCALE_FACTOR": "Множитель апскейла RealESRGAN.",
+    "ORIGINAL_VIDEO": "Видео, которое будет обрабатываться. Обычно это файл после монтажа или готовый исходник.",
+    "FINAL_VIDEO": "Полный путь к итоговому видеофайлу. Это именно файл результата, не папка.",
+    "RESOLUTION": "Метка целевого качества для профиля и логов. Реальный размер задаётся множителем апскейла.",
+    "START_BATCH_TO_IMPROVE": "С какого батча начать обработку. Обычно 1. Полезно для продолжения или диагностики.",
+    "END_BATCH_TO_IMPROVE": "На каком батче остановиться. 0 означает обработать все батчи до конца.",
+    "FRAMES_PER_BATCH": "Сколько кадров класть в один батч. Меньше значение снижает пиковую нагрузку на диск/память.",
+    "OUTPUT_IMAGE_FORMAT": "Формат промежуточных кадров. PNG рекомендуется для максимального качества без потерь.",
+    "ENABLE_DENOISE": "Включает предварительный денойз через waifu2x. Может убрать шум, но также может замылить детали.",
+    "ENABLE_INTERPOLATION": "Включает интерполяцию кадров через RIFE, чтобы увеличить FPS.",
+    "REALESRGAN_MODEL_NAME": "Модель RealESRGAN для апскейла. Для аниме обычно лучше realesr-animevideov3.",
+    "UPSCALE_FACTOR": "Во сколько раз увеличить размер кадра на этапе RealESRGAN.",
     "DENOISE_FACTOR": "Сила шумоподавления waifu2x: -1 авто/без шума, 0-3 уровни шума.",
-    "WAIFU2X_UPSCALE_FACTOR": "Множитель waifu2x на этапе денойза. Обычно 1.",
-    "VIDEO_ENCODER": "Кодировщик ffmpeg: libx264 для качества/совместимости или h264_nvenc для скорости.",
-    "VIDEO_CRF": "Качество libx264. Ниже значение означает выше качество и больше файл.",
-    "VIDEO_PRESET": "Пресет libx264. slow дает хорошее качество при разумной скорости.",
-    "VIDEO_TUNE": "Профиль психовизуальной настройки libx264. animation лучше подходит для аниме и плоских заливок.",
-    "VIDEO_NVENC_CQ": "Качество h264_nvenc. Обычно 15-16 для быстрого варианта.",
-    "VIDEO_PIX_FMT": "Формат пикселей финального видео. yuv444p сохраняет цветовую детализацию, yuv420p более совместим.",
-    "INTERMEDIATE_VIDEO_ENCODER": "Кодировщик временных short-видео. libx264rgb сохраняет RGB-кадры без потерь до финального encode.",
-    "INTERMEDIATE_VIDEO_CRF": "CRF для временных short-видео. 0 сохраняет lossless transport.",
-    "INTERMEDIATE_VIDEO_PRESET": "Пресет libx264 для временных short-видео. ultrafast ускоряет lossless transport.",
-    "INTERMEDIATE_VIDEO_PIX_FMT": "Формат пикселей временных short-видео. bgr24 с libx264rgb сохраняет кадры пиксельно.",
-    "INTERMEDIATE_VIDEO_CONTAINER": "Контейнер временных short-видео. mkv надежнее для RGB-lossless transport.",
-    "FRAMES_MULTIPLY_FACTOR": "Во сколько раз увеличить FPS при интерполяции.",
-    "ENABLE_UHD_MODE": "UHD-режим RIFE для высокого разрешения.",
-    "ENABLE_SPATIAL_TTA_MODE": "Spatial TTA повышает качество, но сильно замедляет обработку.",
-    "ENABLE_TEMPORAL_TTA_MODE": "Temporal TTA повышает стабильность, но сильно замедляет обработку.",
-    "KEEP_TEMP_FILES": "Сохраняет временные файлы для диагностики, если поддерживается этапом пайплайна.",
-    "LOG_LEVEL": "Минимальный уровень подробности логов.",
+    "WAIFU2X_UPSCALE_FACTOR": "Дополнительный множитель waifu2x на этапе денойза. Обычно должен быть 1.",
+    "INTERMEDIATE_VIDEO_ENCODER": "Кодировщик short-видео. Production path использует libx264 video-master и затем stream-copy в final.",
+    "INTERMEDIATE_VIDEO_CRF": "Качество short-видео для libx264. Ниже значение означает выше качество и больше файл. Production default: 12.",
+    "INTERMEDIATE_VIDEO_PRESET": "Баланс скорости и размера short-видео для libx264. Production default: medium.",
+    "INTERMEDIATE_VIDEO_PIX_FMT": "Формат пикселей short-видео. Production default yuv444p сохраняет цветовую детализацию без 4:2:0 subsampling.",
+    "INTERMEDIATE_VIDEO_CONTAINER": "Контейнер short-видео. Production default mkv.",
+    "FRAMES_MULTIPLY_FACTOR": "Во сколько раз увеличить FPS через RIFE. Например, 3 делает выходной FPS равным исходному FPS x3.",
+    "ENABLE_UHD_MODE": "UHD-режим RIFE для высокого разрешения. Обычно нужен при 4K.",
+    "ENABLE_SPATIAL_TTA_MODE": "Spatial TTA RIFE может улучшить качество, но сильно замедляет интерполяцию.",
+    "ENABLE_TEMPORAL_TTA_MODE": "Temporal TTA RIFE повышает стабильность движения, но замедляет интерполяцию.",
+    "KEEP_TEMP_FILES": "Не удалять временные кадры, short-видео, concat-файлы и merged-видео. Полезно для диагностики.",
+    "LOG_LEVEL": "Минимальный уровень подробности логов в файлах и консоли.",
 }
 
 
@@ -351,15 +328,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "FRAMES_MULTIPLY_FACTOR": 3,
         "REALESRGAN_MODEL_NAME": "realesr-animevideov3",
         "UPSCALE_FACTOR": 3,
-        "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 10,
-        "VIDEO_PRESET": "slow",
-        "VIDEO_TUNE": "animation",
-        "VIDEO_PIX_FMT": "yuv444p",
-        "INTERMEDIATE_VIDEO_ENCODER": "libx264rgb",
-        "INTERMEDIATE_VIDEO_CRF": 0,
-        "INTERMEDIATE_VIDEO_PRESET": "ultrafast",
-        "INTERMEDIATE_VIDEO_PIX_FMT": "bgr24",
+        "INTERMEDIATE_VIDEO_ENCODER": "libx264",
+        "INTERMEDIATE_VIDEO_CRF": 12,
+        "INTERMEDIATE_VIDEO_PRESET": "medium",
+        "INTERMEDIATE_VIDEO_PIX_FMT": "yuv444p",
         "INTERMEDIATE_VIDEO_CONTAINER": "mkv",
         "ENABLE_UHD_MODE": True,
         "ENABLE_TEMPORAL_TTA_MODE": True,
@@ -369,9 +341,6 @@ PRESETS: dict[str, dict[str, Any]] = {
         "ENABLE_INTERPOLATION": True,
         "FRAMES_MULTIPLY_FACTOR": 2,
         "UPSCALE_FACTOR": 2,
-        "VIDEO_ENCODER": "h264_nvenc",
-        "VIDEO_NVENC_CQ": 16,
-        "VIDEO_PIX_FMT": "yuv420p",
         "ENABLE_UHD_MODE": False,
     },
     "Слабое железо": {
@@ -380,10 +349,6 @@ PRESETS: dict[str, dict[str, Any]] = {
         "FRAMES_MULTIPLY_FACTOR": 1,
         "UPSCALE_FACTOR": 2,
         "FRAMES_PER_BATCH": 300,
-        "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 18,
-        "VIDEO_PRESET": "medium",
-        "VIDEO_TUNE": "animation",
         "ENABLE_UHD_MODE": False,
     },
     "Только апскейл": {
@@ -391,18 +356,10 @@ PRESETS: dict[str, dict[str, Any]] = {
         "ENABLE_INTERPOLATION": False,
         "FRAMES_MULTIPLY_FACTOR": 1,
         "UPSCALE_FACTOR": 3,
-        "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 10,
-        "VIDEO_PRESET": "slow",
-        "VIDEO_TUNE": "animation",
     },
     "Без интерполяции": {
         "ENABLE_INTERPOLATION": False,
         "FRAMES_MULTIPLY_FACTOR": 1,
-        "VIDEO_ENCODER": "libx264",
-        "VIDEO_CRF": 10,
-        "VIDEO_PRESET": "slow",
-        "VIDEO_TUNE": "animation",
     },
 }
 

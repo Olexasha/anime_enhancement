@@ -61,9 +61,8 @@ def test_generate_video_from_frames_smoke(monkeypatch, tmp_path):
     configure_test_environment(monkeypatch, tmp_path)
     video_handling = reload_project_modules(
         "src.config.settings",
-        "src.files.batch_utils",
         "src.video.video_handling",
-    )[2]
+    )[1]
 
     frame_paths = _write_png_frames(tmp_path / "frames", count=5)
     video_path = video_handling.VideoHandler.generate_video_from_frames(
@@ -76,8 +75,8 @@ def test_generate_video_from_frames_smoke(monkeypatch, tmp_path):
 
     assert video_path.endswith(".mkv"), "Short-видео должно писаться в MKV"
     assert video_stream["codec_name"] == "h264", "Short-видео должно быть H.264"
-    assert video_stream["pix_fmt"] == "gbrp", (
-        "Short-видео должно быть RGB-lossless transport"
+    assert video_stream["pix_fmt"] == "yuv444p", (
+        "Short-видео должно сохранять 4:4:4 цвет без chroma subsampling"
     )
     assert video_stream["avg_frame_rate"] == "24000/1001", (
         "FPS должен сохраняться дробью"
@@ -105,6 +104,6 @@ def test_generate_video_from_frames_smoke(monkeypatch, tmp_path):
     source_frame = cv2.imread(frame_paths[0])
     decoded_frame = cv2.imread(str(decoded))
     assert decoded_frame.shape == source_frame.shape
-    assert (decoded_frame == source_frame).all(), (
-        "RGB-lossless short-видео не должно менять PNG-кадры"
+    assert cv2.PSNR(source_frame, decoded_frame) > 35, (
+        "Компактное short-видео должно оставаться визуально близким к PNG-кадрам"
     )

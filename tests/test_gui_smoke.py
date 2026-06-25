@@ -7,13 +7,27 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 def test_gui_import_and_window_smoke():
     from PySide6.QtWidgets import QApplication
 
-    from gui.main_window import MainWindow
+    from gui.main_window import DETAIL_FIELDS, MainWindow
+    from src.config.pipeline_config import FIELD_LABELS
 
     _app = QApplication.instance() or QApplication([])
     window = MainWindow(Path(__file__).resolve().parents[1])
 
     assert window.windowTitle() == "Anime Enhancement"
     assert window.detail_widgets["FINAL_VIDEO"] is not None
+    assert window.detail_labels["ORIGINAL_VIDEO"].text() == "Исходное видео"
+    assert (
+        window.detail_labels["INTERMEDIATE_VIDEO_PIX_FMT"].text()
+        == "Формат пикселей short-видео"
+    )
+    assert window.detail_labels["FRAMES_MULTIPLY_FACTOR"].text() == "Множитель FPS"
+    assert all(
+        window.detail_labels[field].text() == FIELD_LABELS[field]
+        for field in DETAIL_FIELDS
+    )
+    assert all(
+        window.detail_labels[field].text() != field for field in DETAIL_FIELDS
+    )
     assert window.primary_preset_combo.count() > 0
     window.close()
 

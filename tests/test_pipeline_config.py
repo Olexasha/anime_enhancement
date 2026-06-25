@@ -11,9 +11,11 @@ def test_defaults_are_valid_without_input_requirement():
     assert config.ENABLE_INTERPOLATION is True
     assert config.REALESRGAN_MODEL_NAME == "realesr-animevideov3"
     assert config.FRAMES_MULTIPLY_FACTOR == 3
-    assert config.VIDEO_CRF == 10
-    assert config.VIDEO_TUNE == "animation"
-    assert config.VIDEO_PIX_FMT == "yuv444p"
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264"
+    assert config.INTERMEDIATE_VIDEO_CRF == 12
+    assert config.INTERMEDIATE_VIDEO_PRESET == "medium"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
+    assert config.KEEP_TEMP_FILES is False
 
 
 def test_json_profile_roundtrip(tmp_path: Path):
@@ -22,8 +24,8 @@ def test_json_profile_roundtrip(tmp_path: Path):
         ORIGINAL_VIDEO=str(tmp_path / "input.mp4"),
         FINAL_VIDEO=str(tmp_path / "out.mp4"),
         ENABLE_INTERPOLATION=False,
-        VIDEO_ENCODER="h264_nvenc",
-        VIDEO_NVENC_CQ=15,
+        KEEP_TEMP_FILES=True,
+        INTERMEDIATE_VIDEO_CRF=10,
     )
     config.save_json(profile)
 
@@ -32,8 +34,8 @@ def test_json_profile_roundtrip(tmp_path: Path):
     assert loaded.ORIGINAL_VIDEO == config.ORIGINAL_VIDEO
     assert loaded.FINAL_VIDEO == config.FINAL_VIDEO
     assert loaded.ENABLE_INTERPOLATION is False
-    assert loaded.VIDEO_ENCODER == "h264_nvenc"
-    assert loaded.VIDEO_NVENC_CQ == 15
+    assert loaded.KEEP_TEMP_FILES is True
+    assert loaded.INTERMEDIATE_VIDEO_CRF == 10
 
 
 def test_env_loading(monkeypatch):
@@ -41,17 +43,17 @@ def test_env_loading(monkeypatch):
     monkeypatch.delenv("INTERMEDIATE_VIDEO_CONTAINER", raising=False)
     monkeypatch.setenv("ENABLE_DENOISE", "true")
     monkeypatch.setenv("FRAMES_PER_BATCH", "250")
-    monkeypatch.setenv("VIDEO_CRF", "17")
     monkeypatch.setenv("INTERMEDIATE_VIDEO_PIX_FMT", "yuv444p")
+    monkeypatch.setenv("KEEP_TEMP_FILES", "yes")
 
     config = PipelineConfig.from_env(env_file=Path("missing.env"))
 
     assert config.ENABLE_DENOISE is True
     assert config.FRAMES_PER_BATCH == 250
-    assert config.VIDEO_CRF == 17
-    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
-    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
     assert config.INTERMEDIATE_VIDEO_CONTAINER == "mkv"
+    assert config.KEEP_TEMP_FILES is True
 
 
 def test_old_profile_migrates_intermediate_transport(tmp_path: Path):
@@ -72,19 +74,23 @@ def test_old_profile_migrates_intermediate_transport(tmp_path: Path):
 
     config = PipelineConfig.from_json(profile)
 
-    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
-    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264"
+    assert config.INTERMEDIATE_VIDEO_CRF == 12
+    assert config.INTERMEDIATE_VIDEO_PRESET == "medium"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
     assert config.INTERMEDIATE_VIDEO_CONTAINER == "mkv"
 
 
-def test_env_migrates_stale_intermediate_pix_fmt(monkeypatch):
-    monkeypatch.setenv("INTERMEDIATE_VIDEO_ENCODER", "libx264rgb")
-    monkeypatch.setenv("INTERMEDIATE_VIDEO_PIX_FMT", "yuv444p")
+def test_env_migrates_to_production_intermediate_transport(monkeypatch):
+    monkeypatch.setenv("INTERMEDIATE_VIDEO_ENCODER", "ffv1")
+    monkeypatch.setenv("INTERMEDIATE_VIDEO_PIX_FMT", "bgr0")
+    monkeypatch.setenv("INTERMEDIATE_VIDEO_CRF", "14")
 
     config = PipelineConfig.from_env(env_file=Path("missing.env"))
 
-    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
-    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
+    assert config.INTERMEDIATE_VIDEO_CRF == 12
 
 
 def test_validation_detects_directory_final_video(tmp_path: Path):
@@ -102,10 +108,10 @@ def test_validation_detects_directory_final_video(tmp_path: Path):
     assert any("FINAL_VIDEO" in error for error in errors)
 
 
-def test_preset_fast_changes_encoder():
+def test_preset_fast_changes_resource_profile():
     config = apply_preset(PipelineConfig.defaults(), "Быстрее")
 
-    assert config.VIDEO_ENCODER == "h264_nvenc"
+    assert config.UPSCALE_FACTOR == 2
     assert config.ENABLE_DENOISE is False
 
 
@@ -114,12 +120,10 @@ def test_max_quality_preset_enables_temporal_tta():
 
     assert config.ENABLE_TEMPORAL_TTA_MODE is True
     assert config.ENABLE_DENOISE is False
-    assert config.VIDEO_CRF == 10
-    assert config.VIDEO_TUNE == "animation"
-    assert config.VIDEO_PIX_FMT == "yuv444p"
-    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264rgb"
-    assert config.INTERMEDIATE_VIDEO_CRF == 0
-    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "bgr24"
+    assert config.INTERMEDIATE_VIDEO_ENCODER == "libx264"
+    assert config.INTERMEDIATE_VIDEO_CRF == 12
+    assert config.INTERMEDIATE_VIDEO_PRESET == "medium"
+    assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
     assert config.INTERMEDIATE_VIDEO_CONTAINER == "mkv"
 
 
