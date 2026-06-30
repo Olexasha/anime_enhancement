@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 
@@ -25,7 +26,11 @@ from src.config.settings import (
     TMP_VIDEO_PATH,
     UPSCALED_BATCHES_DIR,
 )
-from src.utils.cleanup import maybe_cleanup_after_stage, verify_video_readable
+from src.utils.cleanup import (
+    CleanupSummary,
+    maybe_cleanup_after_stage,
+    verify_video_readable,
+)
 from src.utils.logger import logger
 from src.video.video_exceptions import (
     VideoDoesNotExist,
@@ -33,6 +38,15 @@ from src.video.video_exceptions import (
     VideoReadFrameError,
 )
 from src.video.video_helpers import sort_frame_paths, sort_video_paths
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 class VideoHandler:
@@ -54,6 +68,7 @@ class VideoHandler:
         self.final_videos_same_name = 1
         self.short_video_processes: list[multiprocessing.Process] = []
         self.short_videos_requested = 0
+        self.cleanup_summaries: list[CleanupSummary] = []
 
     @staticmethod
     def __calculate_fps_after_ai(fps: float) -> float:
@@ -81,7 +96,9 @@ class VideoHandler:
 
     def _wait_for_short_video_slot(self) -> None:
         self._collect_finished_short_video_processes()
-        while self._active_short_video_processes_count() >= self.max_short_video_builders:
+        while (
+            self._active_short_video_processes_count() >= self.max_short_video_builders
+        ):
             oldest = next(
                 process for process in self.short_video_processes if process.is_alive()
             )
@@ -108,34 +125,54 @@ class VideoHandler:
                 )
         self.short_video_processes = active_processes
 
-    async def _wait_for_short_video_results(self, total_short_videos: int) -> None:
+    async def _wait_for_short_video_results(
+        self,
+        total_short_videos: int,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> None:
+        last_reported = -1
         while True:
             self._collect_finished_short_video_processes()
-            if (
-                self.video_queue.qsize() >= total_short_videos
-                and not self.short_video_processes
-            ):
+            ready_count = self.video_queue.qsize()
+            if progress_callback is not None and ready_count != last_reported:
+                progress_callback(ready_count, total_short_videos)
+                last_reported = ready_count
+            if ready_count >= total_short_videos and not self.short_video_processes:
                 return
             logger.info(
                 f"Ожидание short-видео (требуется: {total_short_videos}, "
-                f"готово: {self.video_queue.qsize()}, "
+                f"готово: {ready_count}, "
                 f"активно: {len(self.short_video_processes)})"
             )
             await asyncio.sleep(5)
 
-    async def build_final_video(self, total_short_videos) -> str | None:
+    async def build_final_video(
+        self,
+        total_short_videos,
+        short_video_progress_callback: Callable[[int, int], None] | None = None,
+    ) -> str | None:
         """
         Собирает все видео из очереди в одно финальное видео.
         :return: Путь к созданному видеофайлу или None, если очередь пуста.
         """
-        await self._wait_for_short_video_results(total_short_videos)
+        await self._wait_for_short_video_results(
+            total_short_videos,
+            progress_callback=short_video_progress_callback,
+        )
 
         video_paths = []
         for _ in range(self.video_queue.qsize()):
-            video_path = self.video_queue.get()
+            queue_item = self.video_queue.get()
+            cleanup_summary = None
+            if isinstance(queue_item, tuple) and len(queue_item) == 2:
+                video_path, cleanup_summary = queue_item
+            else:
+                video_path = queue_item
             if not os.path.isfile(video_path):
                 logger.error(f"Видео не существует: {video_path}")
                 raise VideoDoesNotExist(video_path)
+            if cleanup_summary is not None:
+                self.cleanup_summaries.append(cleanup_summary)
             video_paths.append(video_path)
 
         if not video_paths:
@@ -149,14 +186,16 @@ class VideoHandler:
 
         try:
             output_video = self._handle_merging(video_paths)
-            await asyncio.to_thread(
-                maybe_cleanup_after_stage,
-                stage="Финальная сборка",
-                paths=video_paths,
-                reason="merged-видео успешно создано, удаляем short-видео",
-                keep_temp_files=self.keep_temp_files,
-                dependency_path=output_video,
-                dependency_is_video=True,
+            self.cleanup_summaries.append(
+                await asyncio.to_thread(
+                    maybe_cleanup_after_stage,
+                    stage="Финальная сборка",
+                    paths=video_paths,
+                    reason="merged-видео успешно создано, удаляем short-видео",
+                    keep_temp_files=self.keep_temp_files,
+                    dependency_path=output_video,
+                    dependency_is_video=True,
+                )
             )
             return output_video
         except VideoMergingError as error:
@@ -180,7 +219,7 @@ class VideoHandler:
             f"short_{batch_range_start}-{batch_range_end}.{INTERMEDIATE_VIDEO_CONTAINER}",
         )
         Path(BATCH_VIDEO_PATH).mkdir(parents=True, exist_ok=True)
-        logger.info(f"Создание видео из {len(frame_paths)} фреймов")
+        logger.info(f"Создание видео из {len(frame_paths)} кадров")
 
         if not frame_paths:
             raise ValueError("Список кадров для сборки видео пуст")
@@ -261,7 +300,7 @@ class VideoHandler:
         if Path(video_path).suffix.lower() == ".mp4":
             cmd += ["-movflags", "+faststart"]
         cmd += [video_path]
-        logger.info(f"Запуск кодировщика FFmpeg: {' '.join(cmd)}")
+        logger.debug(f"Запуск кодировщика FFmpeg: {' '.join(cmd)}")
         return subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -336,7 +375,7 @@ class VideoHandler:
             )
             frame_paths.extend(frames)
             logger.debug(f"Собрано {len(frames)} фреймов из {batch}")
-        logger.info(f"Всего собрано {len(frame_paths)} фреймов")
+        logger.info(f"Всего собрано {len(frame_paths)} кадров")
         return frame_paths
 
     def _handle_merging(self, video_paths: list) -> str:
@@ -393,13 +432,15 @@ class VideoHandler:
             raise VideoMergingError(f"Ошибка при объединении видео: {e}") from e
         finally:
             if merge_succeeded:
-                maybe_cleanup_after_stage(
-                    stage="Финальная сборка",
-                    paths=[concat_list],
-                    reason="merged-видео создано, удаляем concat list",
-                    keep_temp_files=self.keep_temp_files,
-                    dependency_path=output_path,
-                    dependency_is_video=True,
+                self.cleanup_summaries.append(
+                    maybe_cleanup_after_stage(
+                        stage="Финальная сборка",
+                        paths=[concat_list],
+                        reason="merged-видео создано, удаляем concat list",
+                        keep_temp_files=self.keep_temp_files,
+                        dependency_path=output_path,
+                        dependency_is_video=True,
+                    )
                 )
             else:
                 logger.warning(
@@ -446,9 +487,8 @@ class VideoHandler:
         cmd += ["-video_track_timescale", str(track_timescale)]
         cmd += ["-progress", "pipe:1", "-nostats", output_path]
         # fmt: on
-        logger.info(
-            "Склейка short-видео без повторного video encode: "
-            f"{' '.join(cmd)}"
+        logger.debug(
+            f"Склейка short-видео без повторного video encode: {' '.join(cmd)}"
         )
         VideoHandler._run_ffmpeg_with_progress(
             cmd,
@@ -463,6 +503,7 @@ class VideoHandler:
         desc: str,
     ) -> None:
         duration = max(0.001, expected_duration)
+        started_at = time.time()
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -485,7 +526,7 @@ class VideoHandler:
                 except ValueError:
                     continue
                 current_percent = min(100.0, current_time * 100 / duration)
-                if current_percent - last_logged_percent >= 5:
+                if current_percent < 100 and current_percent - last_logged_percent >= 5:
                     logger.info(f"{desc}: {current_percent:.1f}%")
                     last_logged_percent = current_percent
 
@@ -494,8 +535,9 @@ class VideoHandler:
         if return_code != 0:
             raise VideoMergingError(stderr)
 
-        if current_percent < 100:
-            logger.info(f"{desc}: 100.0%")
+        logger.success(
+            f"{desc}: завершено за {_format_duration(time.time() - started_at)}"
+        )
 
     @staticmethod
     def __build_video_path(video_name: str, path=BATCH_VIDEO_PATH):
@@ -528,18 +570,17 @@ def build_short_video_sync(
     )
 
     if video_path and verify_video_readable(video_path):
-        video_queue.put(video_path)
-        logger.info(f"Видео добавлено в очередь: {video_path}")
-        logger.success(f"Short видео создано: {video_path} (FPS: {fps})")
         cleanup_source_dir = (
             INTERPOLATED_BATCHES_DIR if ENABLE_INTERPOLATION else UPSCALED_BATCHES_DIR
         )
-        cleanup_source_name = "RIFE-кадры" if ENABLE_INTERPOLATION else "upscaled frames"
+        cleanup_source_name = (
+            "RIFE-кадры" if ENABLE_INTERPOLATION else "upscaled frames"
+        )
         cleanup_paths = [
             Path(cleanup_source_dir) / f"batch_{batch_num}"
             for batch_num in range(int(batch_range_start), int(batch_range_end) + 1)
         ]
-        maybe_cleanup_after_stage(
+        cleanup_summary = maybe_cleanup_after_stage(
             stage=f"Батч {batch_range_start}-{batch_range_end}",
             paths=cleanup_paths,
             reason=f"short-video успешно создан, удаляем {cleanup_source_name} батча",
@@ -547,6 +588,9 @@ def build_short_video_sync(
             dependency_path=video_path,
             dependency_is_video=True,
         )
+        video_queue.put((video_path, cleanup_summary))
+        logger.info(f"Видео добавлено в очередь: {video_path}")
+        logger.success(f"Short видео создано: {video_path} (FPS: {fps})")
     else:
         logger.critical(
             "Не удалось создать читаемое short-video из фреймов; "

@@ -153,7 +153,7 @@ def extract_frame_batches_range(
             or saved_frames == total_to_extract
         ):
             logger.info(
-                f"Извлечение фреймов: {saved_frames}/{total_to_extract} "
+                f"Извлечение кадров: {saved_frames}/{total_to_extract} "
                 f"({progress_percent:.1f}%)"
             )
             last_logged_percent = progress_percent
@@ -225,7 +225,7 @@ def extract_frames_to_batches(
 def count_frames_in_certain_batches(
     directory: str, batches_num_range: range = None, just_one_batch: int = 0
 ) -> int:
-    """Считает общее количество фреймов в указанных батчах."""
+    """Считает общее количество кадров в указанных батчах."""
     count = 0
     ext = f".{OUTPUT_IMAGE_FORMAT}"
 

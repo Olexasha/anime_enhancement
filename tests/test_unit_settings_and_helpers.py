@@ -143,6 +143,163 @@ def test_existing_temp_children_skips_gitkeep(tmp_path):
     assert _existing_temp_children([str(temp_dir)]) == [short_file]
 
 
+def _complete_progress(progress):
+    progress.mark_fixed_step_done("prepare", "prepare")
+    progress.update_frame_stage(
+        "extract", done_frames=progress.total_source_frames, status="extract"
+    )
+    if progress.enable_denoise:
+        progress.update_frame_stage(
+            "denoise", done_frames=progress.total_source_frames, status="denoise"
+        )
+    progress.update_frame_stage(
+        "upscale", done_frames=progress.total_source_frames, status="upscale"
+    )
+    if progress.enable_interpolation:
+        progress.update_frame_stage(
+            "interpolate",
+            done_frames=progress.total_interpolated_frames,
+            status="interpolate",
+        )
+    progress.update_short_videos_done(progress.total_windows, "short")
+    progress.mark_fixed_step_done("final_merge", "final")
+    progress.mark_fixed_step_done("cleanup", "cleanup")
+    progress.mark_fixed_step_done("audio", "audio")
+    return progress.mark_fixed_step_done("done", "done")
+
+
+def test_pipeline_progress_is_monotonic_and_skips_disabled_denoise():
+    from main import PipelineProgress
+
+    progress = PipelineProgress(
+        enable_denoise=False,
+        enable_interpolation=True,
+        video_total_frames=6000,
+        start_batch=1,
+        end_batch=6,
+        batch_size=1000,
+        total_windows=6,
+        frames_multiply_factor=3,
+    )
+
+    assert "denoise" not in progress.work_totals
+
+    values = [
+        progress.mark_fixed_step_done("prepare", "prepare"),
+        progress.update_frame_stage("extract", done_frames=1000, status="extract"),
+        progress.update_frame_stage("upscale", done_frames=1000, status="upscale"),
+        progress.update_frame_stage("upscale", done_frames=250, status="upscale"),
+        progress.update_frame_stage(
+            "interpolate", done_frames=3000, status="interpolate"
+        ),
+        progress.update_short_videos_done(1, "short"),
+    ]
+
+    assert values == sorted(values)
+    assert values[-1] < 100
+
+
+def test_pipeline_progress_tracks_denoise_and_interpolation_work():
+    from main import PipelineProgress
+
+    progress = PipelineProgress(
+        enable_denoise=True,
+        enable_interpolation=True,
+        video_total_frames=2000,
+        start_batch=1,
+        end_batch=2,
+        batch_size=1000,
+        total_windows=2,
+        frames_multiply_factor=3,
+    )
+
+    assert "denoise" in progress.work_totals
+    assert "interpolate" in progress.work_totals
+    assert progress.total_source_frames == 2000
+    assert progress.total_interpolated_frames == 6000
+    assert progress.output_frames_for_batches(2, 2) == 3000
+
+
+def test_pipeline_progress_without_interpolation_reaches_100_only_after_fixed_steps():
+    from main import PipelineProgress
+
+    progress = PipelineProgress(
+        enable_denoise=True,
+        enable_interpolation=False,
+        video_total_frames=1200,
+        start_batch=1,
+        end_batch=2,
+        batch_size=1000,
+        total_windows=2,
+        frames_multiply_factor=3,
+    )
+
+    assert "interpolate" not in progress.work_totals
+
+    progress.mark_fixed_step_done("prepare", "prepare")
+    progress.update_frame_stage(
+        "extract", done_frames=progress.total_source_frames, status="extract"
+    )
+    progress.update_frame_stage(
+        "denoise", done_frames=progress.total_source_frames, status="denoise"
+    )
+    progress.update_frame_stage(
+        "upscale", done_frames=progress.total_source_frames, status="upscale"
+    )
+    progress.update_short_videos_done(progress.total_windows, "short")
+
+    assert progress.value() < 100
+
+    progress.mark_fixed_step_done("final_merge", "final")
+    progress.mark_fixed_step_done("cleanup", "cleanup")
+
+    assert progress.value() < 100
+    assert progress.mark_fixed_step_done("audio", "audio") < 100
+    assert progress.mark_fixed_step_done("done", "done") == 100
+
+
+def test_pipeline_progress_short_video_keeps_fixed_steps_visible():
+    from main import PipelineProgress
+
+    progress = PipelineProgress(
+        enable_denoise=False,
+        enable_interpolation=False,
+        video_total_frames=24,
+        start_batch=1,
+        end_batch=1,
+        batch_size=1000,
+        total_windows=1,
+    )
+
+    prepare_value = progress.mark_fixed_step_done("prepare", "prepare")
+
+    assert 0 < prepare_value < 25
+    assert _complete_progress(progress) == 100
+
+
+def test_pipeline_progress_first_window_does_not_jump_too_far():
+    from main import PipelineProgress
+
+    progress = PipelineProgress(
+        enable_denoise=False,
+        enable_interpolation=True,
+        video_total_frames=6000,
+        start_batch=1,
+        end_batch=6,
+        batch_size=1000,
+        total_windows=6,
+        frames_multiply_factor=3,
+    )
+
+    progress.mark_fixed_step_done("prepare", "prepare")
+    progress.update_frame_stage("extract", done_frames=1000, status="extract")
+    progress.update_frame_stage("upscale", done_frames=1000, status="upscale")
+    progress.update_frame_stage("interpolate", done_frames=3000, status="interpolate")
+    progress.update_short_videos_done(1, "short")
+
+    assert progress.value() < 35
+
+
 def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
     monkeypatch, tmp_path
 ):
@@ -215,6 +372,12 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
             main.PipelineProgress(
                 enable_denoise=False,
                 enable_interpolation=True,
+                video_total_frames=6 * settings.FRAMES_PER_BATCH,
+                start_batch=1,
+                end_batch=6,
+                batch_size=settings.FRAMES_PER_BATCH,
+                total_windows=1,
+                frames_multiply_factor=settings.FRAMES_MULTIPLY_FACTOR,
             ),
         )
     )

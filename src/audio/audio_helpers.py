@@ -1,7 +1,17 @@
 import os
 import subprocess
+import time
 
 from src.utils.logger import logger
+
+
+def _format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 
 def run_ffmpeg_command_with_progress(
@@ -15,7 +25,7 @@ def run_ffmpeg_command_with_progress(
     :param desc: Описание задачи для прогресс-бара.
     :param unit: Единица измерения для прогресс-бара (по умолчанию "сек").
     """
-    logger.info(f"Запуск FFmpeg команды: {' '.join(cmd)}")
+    logger.debug(f"Запуск FFmpeg команды: {' '.join(cmd)}")
     logger.debug(f"Ожидаемая длительность: {duration:.1f} {unit}")
 
     try:
@@ -28,7 +38,9 @@ def run_ffmpeg_command_with_progress(
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         current_time = 0.0
-        last_logged_progress = -1
+        started_at = time.time()
+        last_logged_time = 0.0
+        last_logged_percent = -5.0
 
         for line in process.stdout:
             if line.startswith("out_time_ms="):
@@ -38,21 +50,23 @@ def run_ffmpeg_command_with_progress(
                     current_time = time_sec
                     progress_percent = (current_time / duration) * 100
 
-                    # логируем каждые 5% прогресса или при значительном изменении
-                    if (
-                        int(progress_percent) > last_logged_progress + 4
-                        or progress_percent >= 100
+                    if progress_percent < 100 and (
+                        time.time() - last_logged_time >= 10
+                        or progress_percent - last_logged_percent >= 5
                     ):
                         logger.info(
                             f"{desc}: {current_time:.1f}/{duration:.1f}{unit} "
                             f"({progress_percent:.1f}%)"
                         )
-                        last_logged_progress = int(progress_percent)
+                        last_logged_time = time.time()
+                        last_logged_percent = progress_percent
         process.wait()
         if process.returncode != 0:
             logger.error(f"FFmpeg завершился с ошибкой (код: {process.returncode})")
             raise subprocess.CalledProcessError(process.returncode, cmd)
-        logger.info(f"{desc}: {duration:.1f}/{duration:.1f}{unit} (100.0%)")
+        logger.success(
+            f"{desc}: завершено за {_format_duration(time.time() - started_at)}"
+        )
     except Exception as e:
         logger.error(f"Ошибка при выполнении FFmpeg: {str(e)}")
         raise

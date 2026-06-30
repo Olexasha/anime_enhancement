@@ -12,6 +12,8 @@ from src.config.settings import (
     TMP_VIDEO_PATH,
 )
 from src.utils.cleanup import (
+    CleanupResult,
+    CleanupSummary,
     cleanup_path,
     maybe_cleanup_after_stage,
     verify_video_readable,
@@ -127,7 +129,7 @@ class AudioHandler:
         logger.debug("Запуск асинхронного извлечения аудио")
         return await asyncio.to_thread(self.extract_audio_sync)
 
-    async def insert_audio(self) -> None:
+    async def insert_audio(self) -> CleanupSummary | None:
         """
         Добавляет аудиофайл в видео, сохраняя оригинальное качество видео и аудио.
         """
@@ -174,7 +176,7 @@ class AudioHandler:
         cleanup_paths = [self.tmp_video_path]
         if not self.copy_original_audio:
             cleanup_paths.append(audio_input)
-        await asyncio.to_thread(
+        return await asyncio.to_thread(
             maybe_cleanup_after_stage,
             stage="Финальная сборка с аудио",
             paths=cleanup_paths,
@@ -193,24 +195,28 @@ class AudioHandler:
         filename = os.path.splitext(os.path.basename(self.in_video_path))[0]
         return os.path.join(self.audio_path, f"{filename}.{self.audio_format}")
 
-    async def delete_audio_if_exists(self, audio_path: str = None) -> None:
+    async def delete_audio_if_exists(
+        self, audio_path: str = None
+    ) -> CleanupResult | None:
         """Удаляет аудиофайл, если он существует"""
         if self.copy_original_audio:
             logger.debug(
                 "Удаление аудиофайла пропущено: используется оригинальный аудиопоток"
             )
-            return
+            return None
         if audio_path is None:
             audio_path = self.get_audio_full_path()
         if os.path.exists(audio_path):
-            await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 cleanup_path,
                 audio_path,
                 "предварительная очистка временного аудиофайла",
             )
             logger.info(f"Аудиофайл удален: {audio_path}")
+            return result
         else:
             logger.debug(f"Аудиофайл не найден: {audio_path}")
+        return None
 
     def __check_audio_extracted(self, audio_file) -> None:
         """Проверяет успешность извлечения аудио"""

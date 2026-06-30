@@ -91,10 +91,17 @@ DETAIL_FIELDS = [
 LOG_LEVELS = {"debug": 10, "info": 20, "error": 40, "critical": 50}
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 GUI_PROGRESS_RE = re.compile(r"^__GUI_PROGRESS__\|(\d{1,3})\|(.+)$")
-FRAME_EXTRACTION_RE = re.compile(r"Извлечение фреймов: \d+/\d+ \((\d{1,3})%\)")
+FRAME_EXTRACTION_RE = re.compile(
+    r"Извлечение (?:фреймов|кадров): \d+/\d+ \((\d{1,3})(?:\.\d+)?%\)"
+)
 LOG_RECORD_LEVEL_RE = re.compile(
     r"(?:^|\]\s)(DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL):"
 )
+LOGGER_LINE_RE = re.compile(
+    r"^\[(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}:\d{2}:\d{2})\]\s+"
+    r"(DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL):\s*(.*)$"
+)
+LOG_TIME_RE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s+")
 
 
 def decode_process_line(data: bytes) -> str:
@@ -213,6 +220,7 @@ class MainWindow(QMainWindow):
         self.saved_splitter_sizes: list[int] | None = None
         self.detail_widgets: dict[str, Any] = {}
         self.detail_labels: dict[str, QLabel] = {}
+        self._last_progress_value = 0
 
         self.setWindowTitle("Anime Enhancement")
         self._apply_window_icon()
@@ -270,8 +278,16 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setFormat("Прогресс: %p%")
+        self.progress.setFormat("Общий прогресс: %p%")
         layout.addWidget(self.progress, 2, 0, 1, 4)
+
+        self.progress_summary_label = QLabel("Общий прогресс: 0%")
+        self.progress_summary_label.setObjectName("progressSummary")
+        self.progress_detail_label = QLabel("Этап: ожидание запуска")
+        self.progress_detail_label.setObjectName("progressDetail")
+        self.progress_detail_label.setWordWrap(True)
+        layout.addWidget(self.progress_summary_label, 3, 0, 1, 1)
+        layout.addWidget(self.progress_detail_label, 3, 1, 1, 3)
 
         self.check_button = QPushButton("Проверить окружение")
         self.check_button.clicked.connect(self.check_environment_clicked)
@@ -283,12 +299,12 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_process)
 
-        layout.addWidget(self.check_button, 3, 0)
-        layout.addWidget(self.start_button, 3, 1)
-        layout.addWidget(self.stop_button, 3, 2)
+        layout.addWidget(self.check_button, 4, 0)
+        layout.addWidget(self.start_button, 4, 1)
+        layout.addWidget(self.stop_button, 4, 2)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        layout.addWidget(spacer, 3, 3)
+        layout.addWidget(spacer, 4, 3)
         return frame
 
     def _build_primary_panel(self) -> QWidget:
@@ -932,6 +948,7 @@ class MainWindow(QMainWindow):
         profile_path = self.profile_dir / "last_run_profile.json"
         config.save_json(profile_path)
         self._set_running_state(True)
+        self._last_progress_value = 0
         self._set_main_progress(0, "Запуск обработки")
         self._append_log("info", f"Запуск пайплайна с профилем: {profile_path}")
 
@@ -1029,7 +1046,8 @@ class MainWindow(QMainWindow):
             self.process_output_buffer = b""
         if exit_status == QProcess.ExitStatus.NormalExit and exit_code == 0:
             self._append_log("info", "Процесс завершен успешно.")
-            self._set_main_progress(100, "Обработка завершена")
+            if self.progress.value() < 100:
+                self._set_main_progress(100, "Обработка завершена")
             self.statusBar().showMessage("Обработка завершена")
         else:
             self._append_log("critical", f"Процесс завершился с кодом {exit_code}.")
@@ -1062,17 +1080,20 @@ class MainWindow(QMainWindow):
         overall_percent = 2 + round(frame_percent * 8 / 100)
         self._set_main_progress(
             overall_percent,
-            f"Извлечение кадров: {frame_percent}% / Общий прогресс: {overall_percent}%",
+            f"Этап: Извлечение кадров; Прогресс этапа: {frame_percent}%; "
+            f"Общий прогресс: {overall_percent}%",
         )
 
     def _set_main_progress(self, value: int, status: str) -> None:
         safe_value = max(0, min(100, int(value)))
+        if safe_value < self._last_progress_value:
+            safe_value = self._last_progress_value
+        self._last_progress_value = safe_value
         self.progress.setValue(safe_value)
-        if "Общий прогресс:" in status:
-            display = status
-        else:
-            display = f"{status}: {safe_value}%"
-        self.progress.setFormat(display)
+        self.progress.setFormat(f"Общий прогресс: {safe_value}%")
+        display = status if "Общий прогресс:" in status else f"{status}: {safe_value}%"
+        self.progress_summary_label.setText(f"Общий прогресс: {safe_value}%")
+        self.progress_detail_label.setText(display)
         self.statusBar().showMessage(display)
 
     def toggle_logs_expanded(self, expanded: bool) -> None:
@@ -1128,14 +1149,27 @@ class MainWindow(QMainWindow):
         return "info"
 
     def _append_log(self, level: str, message: str) -> None:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.raw_logs.append((level, f"[{timestamp}] {message}"))
+        self.raw_logs.append((level, self._format_log_line(message)))
         if len(self.raw_logs) > 20000:
             self.raw_logs = self.raw_logs[-20000:]
         if not self.logs_paused:
             self.render_logs()
         else:
             self.pending_log_render = True
+
+    def _format_log_line(self, message: str) -> str:
+        clean = message.strip()
+        record = LOGGER_LINE_RE.match(clean)
+        if record:
+            time_text = record.group(4)
+            level = record.group(5)
+            body = record.group(6)
+            level_prefix = "" if level in {"INFO", "SUCCESS"} else f"{level}: "
+            return f"[{time_text}] {level_prefix}{body}"
+        if LOG_TIME_RE.match(clean):
+            return clean
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        return f"[{timestamp}] {clean}"
 
     def render_logs(self) -> None:
         threshold = LOG_LEVELS[self.level_filter.currentText()]

@@ -1,8 +1,10 @@
 import asyncio
+import inspect
 import subprocess
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -52,6 +54,8 @@ PROCESSING_CONFIG: dict[ProcessingType, dict[str, Any]] = {
         "scale_factor": WAIFU2X_UPSCALE_FACTOR,
         "denoise_factor": DENOISE_FACTOR,
         "display_name": "Денойз",
+        "start_name": "денойза",
+        "error_name": "денойзе",
     },
     ProcessingType.UPSCALE: {
         "input_dir": DENOISED_BATCHES_DIR if ENABLE_DENOISE else INPUT_BATCHES_DIR,
@@ -60,6 +64,8 @@ PROCESSING_CONFIG: dict[ProcessingType, dict[str, Any]] = {
         "model_name": REALESRGAN_MODEL_NAME,
         "scale_factor": UPSCALE_FACTOR,
         "display_name": "Апскейл",
+        "start_name": "апскейла",
+        "error_name": "апскейле",
     },
     ProcessingType.INTERPOLATE: {
         "input_dir": UPSCALED_BATCHES_DIR,
@@ -67,9 +73,88 @@ PROCESSING_CONFIG: dict[ProcessingType, dict[str, Any]] = {
         "model_dir": RIFE_MODEL_DIR,
         "num_frame": FRAMES_MULTIPLY_FACTOR,
         "time_step": TIME_STEP,
-        "display_name": "Интерполяция",
+        "display_name": "RIFE",
+        "start_name": "интерполяции RIFE",
+        "error_name": "интерполяции RIFE",
     },
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ProgressSnapshot:
+    processed_frames: int
+    total_frames: int
+    percent: float
+    elapsed_text: str
+    eta_text: str
+    speed_fps: float
+
+
+class ProgressRateEstimator:
+    def __init__(self, *, alpha: float = 0.25) -> None:
+        self.alpha = alpha
+        self.start_time = time.time()
+        self.last_time = self.start_time
+        self.last_count = 0
+        self.smoothed_rate: float | None = None
+        self.samples = 0
+
+    def update(self, count: int, now: float) -> float:
+        delta_count = max(0, count - self.last_count)
+        delta_time = max(0.001, now - self.last_time)
+        if delta_count > 0:
+            instant_rate = delta_count / delta_time
+            if self.smoothed_rate is None:
+                self.smoothed_rate = instant_rate
+            else:
+                self.smoothed_rate = (
+                    self.alpha * instant_rate + (1 - self.alpha) * self.smoothed_rate
+                )
+            self.samples += 1
+            self.last_count = count
+            self.last_time = now
+        elapsed = max(0.001, now - self.start_time)
+        return self.smoothed_rate if self.smoothed_rate is not None else count / elapsed
+
+    def eta_text(self, *, total: int, count: int, percent: float, now: float) -> str:
+        elapsed = now - self.start_time
+        if elapsed < 3 or percent < 3 or self.samples < 2 or not self.smoothed_rate:
+            return "рассчитывается..."
+        remaining = max(0, total - count) / max(self.smoothed_rate, 0.001)
+        return f"~{format_duration(remaining)}"
+
+
+def format_duration(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _call_progress_callback(
+    progress_callback: Callable[..., None] | None,
+    percent: float,
+    snapshot: ProgressSnapshot,
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        parameters = inspect.signature(progress_callback).parameters
+        accepts_meta = (
+            any(
+                parameter.kind == inspect.Parameter.VAR_POSITIONAL
+                for parameter in parameters.values()
+            )
+            or len(parameters) >= 2
+        )
+    except (TypeError, ValueError):
+        accepts_meta = False
+    if accepts_meta:
+        progress_callback(percent, snapshot)
+    else:
+        progress_callback(percent)
 
 
 def _improve_batch(
@@ -170,7 +255,7 @@ def _improve_batch(
             if result.returncode != 0:
                 logger.error(f"Ошибка в батче {batch_num}: {result.stderr}")
                 raise RuntimeError(
-                    f"Ошибка {config['display_name'].lower()}а батча {batch_num}"
+                    f"Ошибка этапа {config['display_name']} в батче {batch_num}"
                 )
             return
 
@@ -182,7 +267,8 @@ def _improve_batch(
                 time.sleep(RETRY_DELAY)
             else:
                 raise RuntimeError(
-                    f"Не удалось {config['display_name'].lower()}ить {batch_num} после {max_retries} попыток"
+                    f"Не удалось обработать батч {batch_num} "
+                    f"на этапе {config['display_name']} после {max_retries} попыток"
                 ) from error
 
         except Exception as error:
@@ -191,82 +277,111 @@ def _improve_batch(
 
 
 async def monitor_progress(
-    total_frames: int,
+    source_frames: int,
     is_processing: list,
     batch_numbers: range,
     processing_type: ProcessingType,
-    progress_callback: Callable[[float], None] | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> None:
     """
-    Универсальный мониторинг прогресса с частым обновлением и визуализацией
-    :param total_frames: Общее количество фреймов для обработки
+    Универсальный мониторинг прогресса с умеренным логированием.
+    :param source_frames: Количество входных кадров для обработки
     :param is_processing: Флаг активной обработки
     :param batch_numbers: Диапазон номеров батчей
     :param processing_type: Тип обработки для отображения
     """
     processed_frames = 0
-    start_time = time.time()
     config = PROCESSING_CONFIG[processing_type]
     display_name = config["display_name"]
     output_dir = config["output_dir"]
-
-    if processing_type == ProcessingType.INTERPOLATE:
-        total_frames = total_frames * FRAMES_MULTIPLY_FACTOR
-    total_frames = max(1, total_frames)
+    target_frames = (
+        source_frames * FRAMES_MULTIPLY_FACTOR
+        if processing_type == ProcessingType.INTERPOLATE
+        else source_frames
+    )
+    target_frames = max(1, target_frames)
 
     last_logged = 0.0
     last_logged_percent = -5.0
     log_interval = 10  # логировать каждые n секунд
     poll_interval = 2  # проверять появление новых кадров чаще, чем логировать
+    rate = ProgressRateEstimator()
+    batch_label = f"{batch_numbers.start}-{batch_numbers.stop - 1}"
 
     while is_processing[0]:
         try:
-            current_frames = count_frames_in_certain_batches(output_dir, batch_numbers)
+            current_frames = min(
+                target_frames,
+                count_frames_in_certain_batches(output_dir, batch_numbers),
+            )
 
             if current_frames > processed_frames:
                 processed_frames = current_frames
-                progress_percent = (processed_frames / total_frames) * 100
-                if progress_callback is not None:
-                    progress_callback(min(100.0, progress_percent))
-
                 current_time = time.time()
-                if (
+                progress_percent = min(100.0, (processed_frames / target_frames) * 100)
+                speed = rate.update(processed_frames, current_time)
+                elapsed = current_time - rate.start_time
+                eta_text = rate.eta_text(
+                    total=target_frames,
+                    count=processed_frames,
+                    percent=progress_percent,
+                    now=current_time,
+                )
+                snapshot = ProgressSnapshot(
+                    processed_frames=processed_frames,
+                    total_frames=target_frames,
+                    percent=progress_percent,
+                    elapsed_text=format_duration(elapsed),
+                    eta_text=eta_text,
+                    speed_fps=speed,
+                )
+                _call_progress_callback(
+                    progress_callback,
+                    min(100.0, progress_percent),
+                    snapshot,
+                )
+
+                if progress_percent < 100 and (
                     current_time - last_logged >= log_interval
                     or progress_percent - last_logged_percent >= 5
-                    or progress_percent >= 100
-                    or processed_frames == total_frames
                 ):
-                    elapsed = current_time - start_time
-                    fps = processed_frames / elapsed if elapsed > 0 else 0
-                    remaining = (
-                        (total_frames - processed_frames) / fps if fps > 0 else 0
-                    )
-
                     logger.info(
-                        f"{display_name} фреймов ({batch_numbers.start}-{batch_numbers.stop - 1}): "
-                        f"{processed_frames}/{total_frames} ({progress_percent:.1f}%) | "
-                        f"Прошло: {elapsed:.1f}сек | Осталось: {remaining:.1f}сек"
+                        f"{display_name}: батчи {batch_label} | "
+                        f"{progress_percent:.1f}% | "
+                        f"{processed_frames}/{target_frames} кадров | "
+                        f"прошло {format_duration(elapsed)} | "
+                        f"осталось {eta_text} | {speed:.1f} FPS"
                     )
                     last_logged = current_time
                     last_logged_percent = progress_percent
-            if processed_frames >= total_frames:
+            if processed_frames >= target_frames:
                 break
             await asyncio.sleep(poll_interval)
         except Exception as error:
             logger.error(f"Ошибка мониторинга прогресса: {str(error)}")
             await asyncio.sleep(1)
 
-    total_time = time.time() - start_time
-    logger.info(
-        f"{display_name} фреймов ({batch_numbers.start}-{batch_numbers.stop - 1}): "
-        f"{total_frames}/{total_frames} "
-        f"(100.0%) | Прошло: {total_time:.1f}сек | Осталось: 0.0сек"
+    final_count = min(
+        target_frames,
+        max(
+            processed_frames, count_frames_in_certain_batches(output_dir, batch_numbers)
+        ),
     )
+    total_time = time.time() - rate.start_time
+    average_speed = final_count / max(total_time, 0.001)
+    snapshot = ProgressSnapshot(
+        processed_frames=target_frames,
+        total_frames=target_frames,
+        percent=100.0,
+        elapsed_text=format_duration(total_time),
+        eta_text="00:00",
+        speed_fps=average_speed,
+    )
+    _call_progress_callback(progress_callback, 100.0, snapshot)
     logger.success(
-        f"Обработка завершена. (Средняя скорость: {total_frames / max(total_time, 0.001):.1f} FPS)"
+        f"{display_name}: батчи {batch_label} завершены за "
+        f"{format_duration(total_time)}, средняя скорость {average_speed:.1f} FPS"
     )
-    if progress_callback is not None:
-        progress_callback(100.0)
 
 
 async def improve_batches(
@@ -277,7 +392,7 @@ async def improve_batches(
     start_batch: int,
     end_batch: int,
     max_retries: int = MAX_RETRIES,
-    progress_callback: Callable[[float], None] | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> None:
     """
     Универсальная функция для асинхронной обработки диапазона батчей
@@ -291,20 +406,29 @@ async def improve_batches(
     """
     config = PROCESSING_CONFIG[processing_type]
     batches_range = range(start_batch, end_batch + 1)
-    total_frames = count_frames_in_certain_batches(config["input_dir"], batches_range)
+    source_frames = count_frames_in_certain_batches(config["input_dir"], batches_range)
     is_processing = [True]
 
     if start_batch == end_batch:
         process_threads = 1
 
-    logger.info(
-        f"Начало {config['display_name'].lower()}`а батчей {start_batch}-{end_batch} "
-        f"(всего фреймов: {total_frames}, процессов: {process_threads})"
-    )
+    if processing_type == ProcessingType.INTERPOLATE:
+        output_frames = source_frames * FRAMES_MULTIPLY_FACTOR
+        logger.info(
+            f"Начало {config['start_name']} батчей {start_batch}-{end_batch}: "
+            f"исходных кадров {source_frames}, "
+            f"ожидаемых кадров на выходе {output_frames}, "
+            f"процессов {process_threads}"
+        )
+    else:
+        logger.info(
+            f"Начало {config['start_name']} батчей {start_batch}-{end_batch}: "
+            f"кадров {source_frames}, процессов {process_threads}"
+        )
 
     monitor_task = asyncio.create_task(
         monitor_progress(
-            total_frames,
+            source_frames,
             is_processing,
             batches_range,
             processing_type,
@@ -329,9 +453,7 @@ async def improve_batches(
             ]
             await asyncio.gather(*tasks)
     except Exception as error:
-        logger.error(
-            f"Ошибка при {config['display_name'].lower()}е батчей: {str(error)}"
-        )
+        logger.error(f"Ошибка при {config['error_name']} батчей: {str(error)}")
         raise
     finally:
         is_processing[0] = False  # завершаем мониторинг прогресса

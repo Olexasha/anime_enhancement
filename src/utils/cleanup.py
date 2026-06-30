@@ -113,8 +113,7 @@ def cleanup_path(
         result.skipped = True
         result.message = safety_error
         logger.warning(
-            f"Пропуск удаления: {target}. Причина: {safety_error}. "
-            f"Запрос: {reason}"
+            f"Пропуск удаления: {target}. Причина: {safety_error}. Запрос: {reason}"
         )
         return result
 
@@ -147,10 +146,10 @@ def cleanup_path(
     start_time = time.time()
     try:
         if target.is_dir() and not target.is_symlink():
-            logger.info(f"Начало удаления временной директории: {target}. {reason}")
+            logger.debug(f"Начало удаления временной директории: {target}. {reason}")
             shutil.rmtree(target)
         else:
-            logger.info(f"Удаление временного файла: {target}. {reason}")
+            logger.debug(f"Удаление временного файла: {target}. {reason}")
             target.unlink()
     except FileNotFoundError:
         result.skipped = True
@@ -166,7 +165,7 @@ def cleanup_path(
     result.deleted = True
     elapsed = time.time() - start_time
     approx = "примерно " if stats.truncated else ""
-    logger.info(
+    logger.debug(
         f"Удалено {stats.files} файлов и {stats.dirs} директорий, "
         f"освобождено {approx}{format_size(stats.bytes_size)} "
         f"за {elapsed:.1f} сек. Причина: {reason}"
@@ -182,6 +181,7 @@ def cleanup_many(
     allowed_roots: Sequence[PathLike] | None = None,
     allow_outside_data_dir: bool = False,
 ) -> CleanupSummary:
+    start_time = time.time()
     summary = CleanupSummary(reason=reason)
     for path in paths:
         summary.results.append(
@@ -195,17 +195,19 @@ def cleanup_many(
         )
 
     if summary.deleted_paths:
+        elapsed = time.time() - start_time
         approx = (
             "примерно "
             if any(result.stats_truncated for result in summary.results)
             else ""
         )
         logger.info(
-            f"Итог очистки: удалено путей {summary.deleted_paths}, "
-            f"файлов {summary.files_deleted}, директорий {summary.dirs_deleted}, "
-            f"освобождено {approx}{format_size(summary.bytes_freed)}. "
-            f"Причина: {reason}"
+            f"Очистка: удалено {summary.deleted_paths} путей, "
+            f"{summary.files_deleted} файлов, {summary.dirs_deleted} директорий, "
+            f"освобождено {approx}{format_size(summary.bytes_freed)} "
+            f"за {elapsed:.1f} сек"
         )
+        logger.debug(f"Причина очистки: {reason}")
     return summary
 
 
@@ -364,11 +366,13 @@ def maybe_cleanup_after_stage(
         dependency_paths,
         file_pattern=file_pattern,
     ):
-        message = f"{stage}: пропуск удаления, файлы следующей стадии не прошли проверку"
+        message = (
+            f"{stage}: пропуск удаления, файлы следующей стадии не прошли проверку"
+        )
         logger.warning(message)
         return CleanupSummary(reason=reason, skipped=True, skip_reason=message)
 
-    logger.info(f"{stage}: {reason}")
+    logger.debug(f"{stage}: {reason}")
     return cleanup_many(
         paths,
         reason=f"{stage}: {reason}",
@@ -428,7 +432,9 @@ def _get_safety_error(
 
     roots = [
         _resolve(Path(root).expanduser())
-        for root in (allowed_roots if allowed_roots is not None else default_cleanup_roots())
+        for root in (
+            allowed_roots if allowed_roots is not None else default_cleanup_roots()
+        )
     ]
     if not any(path != root and path.is_relative_to(root) for root in roots):
         return "путь вне разрешенных временных директорий data"

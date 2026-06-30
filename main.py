@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -93,45 +93,265 @@ def emit_gui_progress(value: int, status: str) -> None:
 
 
 @dataclass(frozen=True)
-class ProgressPhase:
-    name: str
-    weight: float
-    start: float = 0.0
+class ProgressWorkCosts:
+    prepare_fixed: float = 30.0
+    final_merge_fixed: float = 45.0
+    audio_fixed: float = 35.0
+    cleanup_fixed: float = 10.0
+    done_fixed: float = 1.0
+    extract_per_source_frame: float = 0.20
+    denoise_per_source_frame: float = 0.80
+    upscale_per_source_frame: float = 4.00
+    interpolate_per_output_frame: float = 3.00
+    short_video_per_window: float = 45.0
+
+
+DEFAULT_PROGRESS_WORK_COSTS = ProgressWorkCosts()
 
 
 class PipelineProgress:
-    def __init__(self, *, enable_denoise: bool, enable_interpolation: bool) -> None:
-        raw_phases = [
-            ("prepare", 2.0),
-            ("extract", 8.0),
-            ("denoise", 8.0 if enable_denoise else 0.0),
-            ("upscale", 25.0 if enable_interpolation else 55.0),
-            ("interpolate", 52.0 if enable_interpolation else 0.0),
-            ("short_video", 4.0),
-            ("final_merge", 4.0),
-            ("audio", 3.0),
-        ]
-        total = sum(weight for _, weight in raw_phases if weight > 0)
-        phases: dict[str, ProgressPhase] = {}
-        cursor = 0.0
-        for name, weight in raw_phases:
-            if weight <= 0:
-                continue
-            normalized = weight * 100 / total
-            phases[name] = ProgressPhase(name, normalized, cursor)
-            cursor += normalized
-        self.phases = phases
-
-    def value(self, phase_name: str, phase_percent: float) -> int:
-        phase = self.phases[phase_name]
-        progress = (
-            phase.start + phase.weight * max(0.0, min(100.0, phase_percent)) / 100
+    def __init__(
+        self,
+        *,
+        enable_denoise: bool,
+        enable_interpolation: bool,
+        video_total_frames: int = 1,
+        start_batch: int = 1,
+        end_batch: int = 1,
+        batch_size: int = 1000,
+        total_windows: int = 1,
+        frames_multiply_factor: int = 1,
+        costs: ProgressWorkCosts | None = None,
+    ) -> None:
+        self.enable_denoise = enable_denoise
+        self.enable_interpolation = enable_interpolation
+        self.video_total_frames = max(1, int(video_total_frames))
+        self.start_batch = max(1, int(start_batch))
+        self.end_batch = max(self.start_batch, int(end_batch))
+        self.batch_size = max(1, int(batch_size))
+        self.total_windows = max(1, int(total_windows))
+        self.frames_multiply_factor = (
+            max(1, int(frames_multiply_factor)) if enable_interpolation else 1
         )
-        return max(0, min(99, round(progress)))
+        self.costs = costs or DEFAULT_PROGRESS_WORK_COSTS
+        self.total_source_frames = max(
+            1,
+            processed_source_frames(
+                self.video_total_frames,
+                self.start_batch,
+                self.end_batch,
+                self.batch_size,
+            ),
+        )
+        self.total_interpolated_frames = (
+            self.total_source_frames * self.frames_multiply_factor
+        )
+        self.work_totals = self._build_work_totals()
+        self.work_done = dict.fromkeys(self.work_totals, 0.0)
+        self._last_value = 0
 
-    def emit(self, phase_name: str, phase_percent: float, status: str) -> None:
-        overall = self.value(phase_name, phase_percent)
-        emit_gui_progress(overall, f"{status} / Общий прогресс: {overall}%")
+    def _build_work_totals(self) -> dict[str, float]:
+        totals = {
+            "prepare": self.costs.prepare_fixed,
+            "extract": self.total_source_frames * self.costs.extract_per_source_frame,
+            "upscale": self.total_source_frames * self.costs.upscale_per_source_frame,
+            "short_video": self.total_windows * self.costs.short_video_per_window,
+            "final_merge": self.costs.final_merge_fixed,
+            "audio": self.costs.audio_fixed,
+            "cleanup": self.costs.cleanup_fixed,
+            "done": self.costs.done_fixed,
+        }
+        if self.enable_denoise:
+            totals["denoise"] = (
+                self.total_source_frames * self.costs.denoise_per_source_frame
+            )
+        if self.enable_interpolation:
+            totals["interpolate"] = (
+                self.total_interpolated_frames * self.costs.interpolate_per_output_frame
+            )
+        return {stage: max(0.001, total) for stage, total in totals.items()}
+
+    @property
+    def total_work(self) -> float:
+        return sum(self.work_totals.values())
+
+    def value(self) -> int:
+        progress = sum(self.work_done.values()) * 100 / max(self.total_work, 0.001)
+        complete = all(
+            self.work_done[stage] >= self.work_totals[stage]
+            for stage in self.work_totals
+        )
+        upper_bound = 100 if complete else 99
+        self._last_value = max(
+            self._last_value, max(0, min(upper_bound, round(progress)))
+        )
+        return self._last_value
+
+    def emit_status(self, status: str) -> None:
+        overall = self.value()
+        emit_gui_progress(overall, f"{status}; Общий прогресс: {overall}%")
+
+    def update_stage(
+        self,
+        stage: str,
+        *,
+        done_units: float,
+        total_units: float,
+        status: str,
+    ) -> int:
+        if stage not in self.work_totals:
+            self.emit_status(status)
+            return self._last_value
+        ratio = max(0.0, min(1.0, done_units / max(total_units, 0.001)))
+        self.work_done[stage] = max(
+            self.work_done[stage],
+            self.work_totals[stage] * ratio,
+        )
+        self.emit_status(status)
+        return self._last_value
+
+    def update_frame_stage(
+        self,
+        stage: str,
+        *,
+        done_frames: float,
+        status: str,
+    ) -> int:
+        total_frames = (
+            self.total_interpolated_frames
+            if stage == "interpolate"
+            else self.total_source_frames
+        )
+        return self.update_stage(
+            stage,
+            done_units=done_frames,
+            total_units=total_frames,
+            status=status,
+        )
+
+    def update_short_videos_done(self, done_windows: int, status: str) -> int:
+        return self.update_stage(
+            "short_video",
+            done_units=done_windows,
+            total_units=self.total_windows,
+            status=status,
+        )
+
+    def mark_fixed_step_done(self, step: str, status: str) -> int:
+        if step in self.work_totals:
+            self.work_done[step] = self.work_totals[step]
+        self.emit_status(status)
+        return self._last_value
+
+    def source_frames_before_batch(self, batch_num: int) -> int:
+        previous_end = min(batch_num - 1, self.end_batch)
+        if previous_end < self.start_batch:
+            return 0
+        return processed_source_frames(
+            self.video_total_frames,
+            self.start_batch,
+            previous_end,
+            self.batch_size,
+        )
+
+    def source_frames_for_batches(self, batch_start: int, batch_end: int) -> int:
+        clamped_start = max(self.start_batch, batch_start)
+        clamped_end = min(self.end_batch, batch_end)
+        if clamped_end < clamped_start:
+            return 0
+        return processed_source_frames(
+            self.video_total_frames,
+            clamped_start,
+            clamped_end,
+            self.batch_size,
+        )
+
+    def output_frames_before_batch(self, batch_num: int) -> int:
+        return self.source_frames_before_batch(batch_num) * self.frames_multiply_factor
+
+    def output_frames_for_batches(self, batch_start: int, batch_end: int) -> int:
+        return (
+            self.source_frames_for_batches(batch_start, batch_end)
+            * self.frames_multiply_factor
+        )
+
+    def debug_summary(self, *, total_batches: int) -> str:
+        interpolation_work = self.work_totals.get("interpolate", 0.0)
+        lines = [
+            "Progress model:",
+            f"\ttotal_source_frames: {self.total_source_frames}",
+            f"\ttotal_batches: {total_batches}",
+            f"\ttotal_short_video_windows: {self.total_windows}",
+            f"\tdenoise_enabled: {self.enable_denoise}",
+            f"\tinterpolation_enabled: {self.enable_interpolation}",
+            f"\texpected_interpolated_frames: {self.total_interpolated_frames if self.enable_interpolation else 0}",
+            f"\texpected_interpolation_work_units: {interpolation_work:.2f}",
+            f"\ttotal_work_units: {self.total_work:.2f}",
+            "\twork_totals: "
+            + ", ".join(
+                f"{stage}={units:.2f}" for stage, units in self.work_totals.items()
+            ),
+            "\tcosts: "
+            + ", ".join(
+                f"{name}={value}" for name, value in self.costs.__dict__.items()
+            ),
+        ]
+        return "\n".join(lines)
+
+
+@dataclass(slots=True)
+class CleanupTotals:
+    deleted_paths: int = 0
+    files_deleted: int = 0
+    dirs_deleted: int = 0
+    bytes_freed: int = 0
+
+    def add(self, summary: Any | None) -> None:
+        if summary is None:
+            return
+        if hasattr(summary, "deleted_paths"):
+            self.deleted_paths += int(getattr(summary, "deleted_paths", 0))
+        elif getattr(summary, "deleted", False):
+            self.deleted_paths += 1
+        self.files_deleted += int(getattr(summary, "files_deleted", 0))
+        self.dirs_deleted += int(getattr(summary, "dirs_deleted", 0))
+        self.bytes_freed += int(getattr(summary, "bytes_freed", 0))
+
+    def add_many(self, summaries: list[Any] | tuple[Any, ...] | None) -> None:
+        if not summaries:
+            return
+        for summary in summaries:
+            self.add(summary)
+
+
+def format_duration(value: float | timedelta) -> str:
+    seconds = value.total_seconds() if isinstance(value, timedelta) else float(value)
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def format_size_ru(bytes_count: int) -> str:
+    value = float(max(0, bytes_count))
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if value < 1024 or unit == "ТБ":
+            return f"{value:.1f} {unit}" if unit != "Б" else f"{int(value)} {unit}"
+        value /= 1024
+    return f"{value:.1f} ТБ"
+
+
+def processed_source_frames(
+    total_frames: int,
+    start_batch: int,
+    end_batch: int,
+    batch_size: int,
+) -> int:
+    start_frame = (start_batch - 1) * batch_size + 1
+    end_frame = min(end_batch * batch_size, total_frames)
+    if start_frame > total_frames:
+        return 0
+    return max(0, end_frame - start_frame + 1)
 
 
 def print_header(title: str) -> None:
@@ -148,16 +368,17 @@ def print_bottom(title: str) -> None:
     logger.info(f"{'=' * 50}\n")
 
 
-async def clean_up(audio: Any) -> None:
+async def clean_up(audio: Any) -> list[Any]:
     from src.config import settings
     from src.utils.cleanup import cleanup_many
     from src.utils.logger import logger
 
     if settings.KEEP_TEMP_FILES:
         logger.info("Очистка временных файлов пропущена: KEEP_TEMP_FILES=true")
-        return
+        return []
 
     logger.info("Предварительная safe-очистка старых временных файлов")
+    cleanup_summaries: list[Any] = []
     cleanup_paths = list(
         _existing_temp_children(
             [
@@ -170,14 +391,19 @@ async def clean_up(audio: Any) -> None:
             ]
         )
     )
-    await audio.delete_audio_if_exists()
+    audio_cleanup = await audio.delete_audio_if_exists()
+    if audio_cleanup is not None:
+        cleanup_summaries.append(audio_cleanup)
     if cleanup_paths:
-        await asyncio.to_thread(
-            cleanup_many,
-            cleanup_paths,
-            "предварительная очистка старых временных video-файлов",
+        cleanup_summaries.append(
+            await asyncio.to_thread(
+                cleanup_many,
+                cleanup_paths,
+                "предварительная очистка старых временных video-файлов",
+            )
         )
     logger.debug("Временные файлы успешно удалены")
+    return cleanup_summaries
 
 
 def _existing_temp_children(directories: list[str]) -> list[Path]:
@@ -270,7 +496,7 @@ async def process_batches(
     progress: PipelineProgress,
     progress_start_batch: int | None = None,
     progress_end_batch: int | None = None,
-) -> None:
+) -> list[Any]:
     from src.config import settings
     from src.frames.improve import ProcessingType, improve_batches
     from src.utils.cleanup import maybe_cleanup_after_stage
@@ -280,32 +506,58 @@ async def process_batches(
     first_batch = progress_start_batch or start_batch
     last_batch = progress_end_batch or end_batch_to_improve
     total_batches = max(1, last_batch - first_batch + 1)
-
-    def batch_phase_percent(
-        batch_start: int, batch_end: int, local_percent: float
-    ) -> float:
-        completed_before = max(0, batch_start - first_batch)
-        current_size = max(1, batch_end - batch_start + 1)
-        completed = (
-            completed_before + current_size * max(0.0, min(100.0, local_percent)) / 100
-        )
-        return max(0.0, min(100.0, completed * 100 / total_batches))
+    cleanup_summaries: list[Any] = []
 
     def emit_batch_progress(
-        phase_name: str,
+        stage: str,
         display_name: str,
         batch_start: int,
         batch_end: int,
         local_percent: float,
+        meta: Any | None = None,
     ) -> None:
-        phase_percent = batch_phase_percent(batch_start, batch_end, local_percent)
-        overall = progress.value(phase_name, phase_percent)
-        emit_gui_progress(
-            overall,
-            (
-                f"{display_name} батчей ({batch_start}-{batch_end} из {end_batch_to_improve}): "
-                f"{round(local_percent)}% / Общий прогресс: {overall}%"
-            ),
+        current_total = (
+            progress.output_frames_for_batches(batch_start, batch_end)
+            if stage == "interpolate"
+            else progress.source_frames_for_batches(batch_start, batch_end)
+        )
+        frames_before = (
+            progress.output_frames_before_batch(batch_start)
+            if stage == "interpolate"
+            else progress.source_frames_before_batch(batch_start)
+        )
+        if meta is not None and meta.processed_frames is not None:
+            current_done = int(meta.processed_frames)
+            local_percent = float(meta.percent)
+        else:
+            current_done = round(
+                current_total * max(0.0, min(100.0, local_percent)) / 100
+            )
+        cumulative_done = frames_before + min(current_total, max(0, current_done))
+        details = [
+            f"Этап: {display_name}",
+            f"Батчи: {batch_start}-{batch_end} из {end_batch_to_improve}",
+            f"Прогресс этапа: {round(local_percent)}%",
+        ]
+        frame_label = "Выходные кадры" if stage == "interpolate" else "Кадры"
+        if meta is not None:
+            processed = getattr(meta, "processed_frames", None)
+            total = getattr(meta, "total_frames", None)
+            elapsed = getattr(meta, "elapsed_text", "")
+            eta = getattr(meta, "eta_text", "")
+            speed = getattr(meta, "speed_fps", None)
+            if processed is not None and total is not None:
+                details.append(f"{frame_label}: {processed}/{total}")
+            if elapsed:
+                details.append(f"Прошло: {elapsed}")
+            if eta:
+                details.append(f"Осталось: {eta}")
+            if speed is not None:
+                details.append(f"Скорость: {speed:.1f} FPS")
+        progress.update_frame_stage(
+            stage,
+            done_frames=cumulative_done,
+            status="; ".join(details),
         )
 
     async def cleanup_batch_dirs_after_stage(
@@ -316,7 +568,7 @@ async def process_batches(
         batch_start: int,
         batch_end: int,
         reason: str,
-    ) -> None:
+    ) -> Any:
         source_paths = [
             Path(source_dir) / f"batch_{batch_num}"
             for batch_num in range(batch_start, batch_end + 1)
@@ -325,7 +577,7 @@ async def process_batches(
             Path(dependency_dir) / f"batch_{batch_num}"
             for batch_num in range(batch_start, batch_end + 1)
         ]
-        await asyncio.to_thread(
+        return await asyncio.to_thread(
             maybe_cleanup_after_stage,
             stage=stage,
             paths=source_paths,
@@ -348,18 +600,21 @@ async def process_batches(
                 start_batch,
                 end_batch,
                 progress_callback=lambda percent,
+                meta=None,
                 batch_start=start_batch,
                 batch_end=end_batch: emit_batch_progress(
-                    "denoise", "Денойз", batch_start, batch_end, percent
+                    "denoise", "Денойз", batch_start, batch_end, percent, meta
                 ),
             )
-            await cleanup_batch_dirs_after_stage(
-                stage=f"Денойз батчей {start_batch}-{end_batch}",
-                source_dir=settings.INPUT_BATCHES_DIR,
-                dependency_dir=settings.DENOISED_BATCHES_DIR,
-                batch_start=start_batch,
-                batch_end=end_batch,
-                reason="денойз успешно создан, удаляем extracted frames батча",
+            cleanup_summaries.append(
+                await cleanup_batch_dirs_after_stage(
+                    stage=f"Денойз батчей {start_batch}-{end_batch}",
+                    source_dir=settings.INPUT_BATCHES_DIR,
+                    dependency_dir=settings.DENOISED_BATCHES_DIR,
+                    batch_start=start_batch,
+                    batch_end=end_batch,
+                    reason="денойз успешно создан, удаляем extracted frames батча",
+                )
             )
             logger.success(
                 f"Батчи {start_batch}-{end_batch} успешно обработаны денойзом"
@@ -374,25 +629,30 @@ async def process_batches(
             ai_realesrgan_path,
             start_batch,
             end_batch,
-            progress_callback=lambda percent, batch_start=start_batch, batch_end=end_batch: emit_batch_progress(
-                "upscale", "Апскейл", batch_start, batch_end, percent
+            progress_callback=lambda percent,
+            meta=None,
+            batch_start=start_batch,
+            batch_end=end_batch: emit_batch_progress(
+                "upscale", "Апскейл", batch_start, batch_end, percent, meta
             ),
         )
-        await cleanup_batch_dirs_after_stage(
-            stage=f"Апскейл батчей {start_batch}-{end_batch}",
-            source_dir=(
-                settings.DENOISED_BATCHES_DIR
-                if settings.ENABLE_DENOISE
-                else settings.INPUT_BATCHES_DIR
-            ),
-            dependency_dir=settings.UPSCALED_BATCHES_DIR,
-            batch_start=start_batch,
-            batch_end=end_batch,
-            reason=(
-                "апскейл успешно создан, удаляем denoised frames батча"
-                if settings.ENABLE_DENOISE
-                else "апскейл успешно создан, удаляем extracted frames батча"
-            ),
+        cleanup_summaries.append(
+            await cleanup_batch_dirs_after_stage(
+                stage=f"Апскейл батчей {start_batch}-{end_batch}",
+                source_dir=(
+                    settings.DENOISED_BATCHES_DIR
+                    if settings.ENABLE_DENOISE
+                    else settings.INPUT_BATCHES_DIR
+                ),
+                dependency_dir=settings.UPSCALED_BATCHES_DIR,
+                batch_start=start_batch,
+                batch_end=end_batch,
+                reason=(
+                    "апскейл успешно создан, удаляем denoised frames батча"
+                    if settings.ENABLE_DENOISE
+                    else "апскейл успешно создан, удаляем extracted frames батча"
+                ),
+            )
         )
         logger.success(f"Батчи {start_batch}-{end_batch} успешно апскейлены")
 
@@ -412,21 +672,29 @@ async def process_batches(
                     ai_rife_path,
                     batches[0],
                     batches[-1],
-                    progress_callback=lambda percent, batch_start=batches[0], batch_end=batches[-1]: emit_batch_progress(
+                    progress_callback=lambda percent,
+                    meta=None,
+                    batch_start=batches[0],
+                    batch_end=batches[-1]: emit_batch_progress(
                         "interpolate",
                         "RIFE",
                         batch_start,
                         batch_end,
                         percent,
+                        meta,
                     ),
                 )
-                await cleanup_batch_dirs_after_stage(
-                    stage=f"RIFE батчей {batches[0]}-{batches[-1]}",
-                    source_dir=settings.UPSCALED_BATCHES_DIR,
-                    dependency_dir=settings.INTERPOLATED_BATCHES_DIR,
-                    batch_start=batches[0],
-                    batch_end=batches[-1],
-                    reason="RIFE-кадры успешно созданы, удаляем upscaled frames батча",
+                cleanup_summaries.append(
+                    await cleanup_batch_dirs_after_stage(
+                        stage=f"RIFE батчей {batches[0]}-{batches[-1]}",
+                        source_dir=settings.UPSCALED_BATCHES_DIR,
+                        dependency_dir=settings.INTERPOLATED_BATCHES_DIR,
+                        batch_start=batches[0],
+                        batch_end=batches[-1],
+                        reason=(
+                            "RIFE-кадры успешно созданы, удаляем upscaled frames батча"
+                        ),
+                    )
                 )
             logger.success(f"Батчи {start_batch}-{end_batch} успешно интерполированы")
         else:
@@ -437,13 +705,29 @@ async def process_batches(
         batches_to_perform = [f"batch_{i}" for i in range(start_batch, end_batch + 1)]
         video.build_short_video(batches_to_perform)
         completed_batches = max(0, end_batch - first_batch + 1)
-        batch_progress = completed_batches / total_batches
-        progress.emit(
-            "short_video",
-            batch_progress * 100,
-            f"Сборка коротких видео: {completed_batches}/{total_batches}",
-        )
+        ready_short_videos = _safe_short_video_queue_size(video)
+        if ready_short_videos:
+            progress.update_short_videos_done(
+                ready_short_videos,
+                f"Short-видео готово: {ready_short_videos}/{progress.total_windows}",
+            )
+        else:
+            progress.emit_status(
+                f"Short-видео поставлено в очередь: {completed_batches}/{total_batches} батчей"
+            )
         start_batch += threads
+    return cleanup_summaries
+
+
+def _safe_short_video_queue_size(video: Any) -> int:
+    queue = getattr(video, "video_queue", None)
+    qsize = getattr(queue, "qsize", None)
+    if qsize is None:
+        return 0
+    try:
+        return max(0, int(qsize()))
+    except (NotImplementedError, OSError):
+        return 0
 
 
 async def run_pipeline() -> None:
@@ -459,15 +743,12 @@ async def run_pipeline() -> None:
     from src.video.video_handling import VideoHandler
 
     start_time = datetime.now()
+    cleanup_totals = CleanupTotals()
     emit_gui_progress(0, "Запуск улучшения видео")
     print_header("запуск улучшения видео")
 
     try:
-        progress = PipelineProgress(
-            enable_denoise=settings.ENABLE_DENOISE,
-            enable_interpolation=settings.ENABLE_INTERPOLATION,
-        )
-        progress.emit("prepare", 10, "Проверка системы и путей к AI-утилитам")
+        emit_gui_progress(0, "Проверка системы и путей к AI-утилитам")
         my_computer = ComputerParams()
         ai_realesrgan_path = my_computer.ai_realesrgan_path
         ai_waifu2x_path = my_computer.ai_waifu2x_path
@@ -476,12 +757,7 @@ async def run_pipeline() -> None:
 
         logger.info(
             "Параметры системы:"
-            f"\n\tОС: {my_computer.cpu_name}"
-            f"\n\tCPU потоки: {my_computer.cpu_threads}"
-            f"\n\tБезопасные потоки: {my_computer.safe_cpu_threads}"
-            f"\n\tСкорость SSD: ~{my_computer.ssd_speed} MB/s"
-            f"\n\tRAM: ~{my_computer.ram_total} GB"
-            f"\n\tПараметры нейронок: -j {ai_threads}"
+            f"\n\t{my_computer.hardware_report(ai_threads=ai_threads, process_threads=process_threads)}"
             f"\n\tПуть к нейронке денойза: {ai_waifu2x_path}"
             f"\n\tПуть к нейронке апскейла: {ai_realesrgan_path}"
             f"\n\tПуть к нейронке интерполяции: {ai_rife_path}"
@@ -490,15 +766,14 @@ async def run_pipeline() -> None:
             logger.info("KEEP_TEMP_FILES=true: временные файлы будут сохранены")
         else:
             logger.info("Очистка временных файлов включена: режим safe")
-        progress.emit("prepare", 100, "Система и AI-утилиты проверены")
 
         print_header("извлекаем кадры и готовим аудио")
-        progress.emit("extract", 0, "Подготовка кадров и аудио")
+        emit_gui_progress(0, "Подготовка кадров и аудио")
         audio = AudioHandler(
             threads=my_computer.safe_cpu_threads // 2,
             keep_temp_files=settings.KEEP_TEMP_FILES,
         )
-        await clean_up(audio)
+        cleanup_totals.add_many(await clean_up(audio))
 
         asyncio.create_task(audio.extract_audio())
         total_frames = await asyncio.to_thread(
@@ -516,6 +791,27 @@ async def run_pipeline() -> None:
             process_threads,
             enable_interpolation=settings.ENABLE_INTERPOLATION,
         )
+        expected_short_videos = calculate_short_video_windows(
+            settings.START_BATCH_TO_IMPROVE,
+            end_batch_to_improve,
+            batch_window_size,
+        )
+        progress = PipelineProgress(
+            enable_denoise=settings.ENABLE_DENOISE,
+            enable_interpolation=settings.ENABLE_INTERPOLATION,
+            video_total_frames=total_frames,
+            start_batch=settings.START_BATCH_TO_IMPROVE,
+            end_batch=end_batch_to_improve,
+            batch_size=settings.FRAMES_PER_BATCH,
+            total_windows=expected_short_videos,
+            frames_multiply_factor=settings.FRAMES_MULTIPLY_FACTOR,
+        )
+        logger.debug(
+            progress.debug_summary(
+                total_batches=end_batch_to_improve - settings.START_BATCH_TO_IMPROVE + 1
+            )
+        )
+        progress.mark_fixed_step_done("prepare", "Система и AI-утилиты проверены")
         logger.info(
             "Windowed pipeline:"
             f"\n\tВсего кадров: {total_frames}"
@@ -525,19 +821,18 @@ async def run_pipeline() -> None:
         )
         video = VideoHandler(fps=fps, max_short_video_builders=2)
         print_bottom("кадры и аудио подготовлены")
-        progress.emit("extract", 100, "Метаданные видео и аудио подготовлены")
+        progress.emit_status("Метаданные видео и аудио подготовлены")
 
         print_header("генерируем улучшенные короткие видео")
-        progress.emit(
-            "upscale", 0, f"Начало ИИ-обработки батчей: {end_batch_to_improve}"
-        )
+        progress.emit_status(f"Начало ИИ-обработки батчей: {end_batch_to_improve}")
+        extracted_frames_done = 0
         for window_start in range(
             settings.START_BATCH_TO_IMPROVE,
             end_batch_to_improve + 1,
             batch_window_size,
         ):
             window_end = min(window_start + batch_window_size - 1, end_batch_to_improve)
-            extract_frame_batches_range(
+            extracted_frames_done += extract_frame_batches_range(
                 threads=my_computer.safe_cpu_threads // 2,
                 start_batch=window_start,
                 end_batch=window_end,
@@ -545,50 +840,92 @@ async def run_pipeline() -> None:
                 output_dir=settings.INPUT_BATCHES_DIR,
                 batch_size=settings.FRAMES_PER_BATCH,
             )
-            await process_batches(
-                process_threads,
-                ai_threads,
-                video,
-                ai_waifu2x_path,
-                ai_realesrgan_path,
-                ai_rife_path,
-                window_start,
-                window_end,
-                progress,
-                progress_start_batch=settings.START_BATCH_TO_IMPROVE,
-                progress_end_batch=end_batch_to_improve,
+            progress.update_frame_stage(
+                "extract",
+                done_frames=extracted_frames_done,
+                status=(
+                    f"Этап: Извлечение кадров; "
+                    f"Окно: батчи {window_start}-{window_end} из {end_batch_to_improve}; "
+                    f"Кадры: {extracted_frames_done}/{progress.total_source_frames}"
+                ),
+            )
+            cleanup_totals.add_many(
+                await process_batches(
+                    process_threads,
+                    ai_threads,
+                    video,
+                    ai_waifu2x_path,
+                    ai_realesrgan_path,
+                    ai_rife_path,
+                    window_start,
+                    window_end,
+                    progress,
+                    progress_start_batch=settings.START_BATCH_TO_IMPROVE,
+                    progress_end_batch=end_batch_to_improve,
+                )
             )
         print_bottom("улучшенные короткие видео сгенерированы")
-        progress.emit("short_video", 100, "Короткие улучшенные видео сгенерированы")
+        progress.emit_status("Все short-видео поставлены в очередь сборки")
 
         print_header("начало финальной сборки видео")
-        progress.emit("final_merge", 0, "Финальная сборка видео")
+        progress.emit_status("Финальная сборка видео")
         total_short_videos = video.short_videos_requested
-        expected_short_videos = calculate_short_video_windows(
-            settings.START_BATCH_TO_IMPROVE,
-            end_batch_to_improve,
-            batch_window_size,
-        )
         if total_short_videos != expected_short_videos:
             logger.warning(
                 f"Количество запрошенных short-видео отличается от ожидаемого: "
                 f"{total_short_videos} != {expected_short_videos}"
             )
-        final_merge = await video.build_final_video(total_short_videos)
+
+        def update_short_video_progress(done: int, total: int) -> None:
+            progress.update_short_videos_done(
+                done,
+                f"Этап: Сборка short-видео; Готово: {done}/{total}",
+            )
+
+        final_merge = await video.build_final_video(
+            total_short_videos,
+            short_video_progress_callback=update_short_video_progress,
+        )
+        cleanup_totals.add_many(getattr(video, "cleanup_summaries", []))
         logger.success(f"Общее видео собрано: {final_merge}")
-        progress.emit("final_merge", 100, "Финальная сборка видео завершена")
+        progress.mark_fixed_step_done("final_merge", "Финальная сборка видео завершена")
 
         logger.info("Добавление аудиодорожки к финальному видео")
-        progress.emit("audio", 0, "Добавление аудиодорожки")
+        progress.emit_status("Добавление аудиодорожки")
         audio.tmp_video_path = final_merge
-        await audio.insert_audio()
+        cleanup_totals.add(await audio.insert_audio())
         logger.success(f"Аудио добавлено к {settings.FINAL_VIDEO}")
+        progress.mark_fixed_step_done("cleanup", "Очистка временных файлов завершена")
+        progress.mark_fixed_step_done("audio", "Аудиодорожка добавлена")
         print_bottom("финальная сборка завершена")
 
-        logger.success(f"Итоговое видео сохранено: {settings.FINAL_VIDEO}")
-        emit_gui_progress(100, "Готово")
         execution_time = datetime.now() - start_time
-        logger.info(f"Общее время выполнения: {execution_time}")
+        elapsed_text = format_duration(execution_time)
+        source_frames_done = processed_source_frames(
+            total_frames,
+            settings.START_BATCH_TO_IMPROVE,
+            end_batch_to_improve,
+            settings.FRAMES_PER_BATCH,
+        )
+        avg_speed = source_frames_done / max(execution_time.total_seconds(), 0.001)
+        logger.success(f"Итоговое видео сохранено: {settings.FINAL_VIDEO}")
+        logger.success(f"ГОТОВО: видео обработано за {elapsed_text}")
+        logger.info(
+            "Сводка обработки:"
+            f"\n\tИсходное видео: {settings.ORIGINAL_VIDEO}"
+            f"\n\tИтоговый файл: {settings.FINAL_VIDEO}"
+            f"\n\tОбработано исходных кадров: {source_frames_done}"
+            f"\n\tИтоговый FPS: {video.fps:.3f}"
+            f"\n\tДлительность обработки: {elapsed_text}"
+            f"\n\tСредняя скорость: {avg_speed:.2f} исходных кадров/сек"
+            f"\n\tОчистка: удалено путей {cleanup_totals.deleted_paths}, "
+            f"файлов {cleanup_totals.files_deleted}, "
+            f"директорий {cleanup_totals.dirs_deleted}, "
+            f"освобождено {format_size_ru(cleanup_totals.bytes_freed)}"
+        )
+        progress.mark_fixed_step_done(
+            "done", f"ГОТОВО: видео обработано за {elapsed_text}"
+        )
         print_bottom("улучшение видео завершено")
     except Exception as error:
         logger.critical(f"Критическая ошибка: {str(error)}")

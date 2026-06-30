@@ -25,9 +25,7 @@ def test_gui_import_and_window_smoke():
         window.detail_labels[field].text() == FIELD_LABELS[field]
         for field in DETAIL_FIELDS
     )
-    assert all(
-        window.detail_labels[field].text() != field for field in DETAIL_FIELDS
-    )
+    assert all(window.detail_labels[field].text() != field for field in DETAIL_FIELDS)
     assert window.primary_preset_combo.count() > 0
     window.close()
 
@@ -162,13 +160,13 @@ def test_gui_main_progress_uses_pipeline_markers_not_any_percent():
 
     window._handle_process_line("__GUI_PROGRESS__|30|Начало ИИ-обработки")
     assert window.progress.value() == 30
-    assert "Начало ИИ-обработки" in window.progress.format()
+    assert "Начало ИИ-обработки" in window.progress_detail_label.text()
 
     window._handle_process_line("[INFO] Внутренний этап: 99%")
     assert window.progress.value() == 30
 
     window._handle_process_line("[INFO] Извлечение фреймов: 500/1000 (50%)")
-    assert window.progress.value() == 6
+    assert window.progress.value() == 30
     window.close()
 
 
@@ -186,10 +184,7 @@ def test_gui_does_not_mark_ffmpeg_loglevel_argument_as_error():
         )
         == "info"
     )
-    assert (
-        window._detect_level("[10.06.2026 10:00:00] ERROR: ffmpeg failed")
-        == "error"
-    )
+    assert window._detect_level("[10.06.2026 10:00:00] ERROR: ffmpeg failed") == "error"
     window.close()
 
 

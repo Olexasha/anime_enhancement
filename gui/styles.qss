@@ -36,6 +36,21 @@ QLabel, QCheckBox {
     border: none;
 }
 
+#progressSummary {
+    color: #F4F8FB;
+    font-size: 14px;
+    font-weight: 750;
+    background: transparent;
+    border: none;
+}
+
+#progressDetail {
+    color: #B8C4CF;
+    font-size: 13px;
+    background: transparent;
+    border: none;
+}
+
 #sectionTitle {
     font-size: 16px;
     font-weight: 700;

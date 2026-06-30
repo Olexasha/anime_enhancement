@@ -102,7 +102,7 @@ class ComputerParams:
         """
         try:
             if not self._is_nvidia_smi_installed():
-                return "NVIDIA GPU не обнаружен или nvidia-smi не установле"
+                return "NVIDIA GPU не обнаружен или nvidia-smi не установлен"
 
             gpu_info = self._run_subprocess(
                 ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]
@@ -211,6 +211,28 @@ class ComputerParams:
                 f"Ошибка при вычислении тредов load:proc:save для нейронок: {str(e)}"
             )
             raise
+
+    def hardware_report(
+        self,
+        *,
+        ai_threads: str | None = None,
+        process_threads: int | None = None,
+    ) -> str:
+        """Возвращает компактную сводку железа и выбранных потоков для стартового лога."""
+        lines = [
+            f"ОС: {self.os}",
+            f"CPU: {self.cpu_name or platform.uname().processor or platform.machine()}",
+            f"CPU потоки: {self.cpu_threads} (безопасно: {self.safe_cpu_threads})",
+            f"RAM: {self.ram_total} GB",
+            f"GPU: {self.gpu_name}",
+            f"GPU память: {self.gpu_memory} MB",
+            f"Скорость SSD: ~{self.ssd_speed} MB/s",
+        ]
+        if ai_threads is not None:
+            lines.append(f"Параметры нейронок -j: {ai_threads}")
+        if process_threads is not None:
+            lines.append(f"Параллельных AI-процессов: {process_threads}")
+        return "\n\t".join(lines)
 
     def _calculate_processing_threads(self) -> int:
         """Считает количество безопасных процессов для запуска нейронок параллельно"""
@@ -329,13 +351,7 @@ class ComputerParams:
 
     def __str__(self) -> str:
         try:
-            return (
-                f"ОС: {self.os}\n"
-                f"Процессор: {self.cpu_name} ({self.cpu_threads} потоков, безопасно: {self.safe_cpu_threads})\n"
-                f"Видеокарта: {self.gpu_name} ({self.gpu_memory} MB)\n"
-                f"Оперативная память: {self.ram_total} GB\n"
-                f"Скорость SSD: {self.ssd_speed} MB/s\n"
-            )
+            return self.hardware_report() + "\n"
         except Exception as e:
             logger.error(f"Ошибка генерации информации о системе: {str(e)}")
             return "Информация о системе недоступна"
