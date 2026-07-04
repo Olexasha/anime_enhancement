@@ -4,6 +4,7 @@ import html
 import os
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,16 +19,17 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QIcon, QTextCursor
+from PySide6.QtGui import QIcon, QPainter, QPalette, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -37,6 +39,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -62,8 +66,6 @@ from src.config.runtime_paths import (
 )
 
 DETAIL_FIELDS = [
-    "ORIGINAL_VIDEO",
-    "FINAL_VIDEO",
     "RESOLUTION",
     "START_BATCH_TO_IMPROVE",
     "END_BATCH_TO_IMPROVE",
@@ -102,6 +104,15 @@ LOGGER_LINE_RE = re.compile(
     r"(DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL):\s*(.*)$"
 )
 LOG_TIME_RE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s+")
+OVERALL_PROGRESS_RE = re.compile(r"^Общий прогресс\s*:\s*\d{1,3}%$", re.IGNORECASE)
+DONE_PROGRESS_RE = re.compile(r"^ГОТОВО\s*:?\s*(.*)$", re.IGNORECASE)
+LOCAL_PROGRESS_RE = re.compile(r"^Прогресс этапа\s*:\s*(.+)$", re.IGNORECASE)
+MAX_QUEUE_VIDEOS = 5
+QUEUE_STATUS_PENDING = "Ожидает"
+QUEUE_STATUS_RUNNING = "В обработке"
+QUEUE_STATUS_DONE = "Готово"
+QUEUE_STATUS_ERROR = "Ошибка"
+QUEUE_STATUS_CANCELLED = "Остановлено"
 
 
 def decode_process_line(data: bytes) -> str:
@@ -176,6 +187,46 @@ class IntStepper(QWidget):
             self.value_edit.setText(str(self._value))
 
 
+class ElidedPathLineEdit(QLineEdit):
+    def paintEvent(self, event: Any) -> None:
+        super().paintEvent(event)
+        text = self.text()
+        if not text or self.hasFocus() or self.hasSelectedText():
+            return
+        text_rect = self.rect().adjusted(10, 0, -10, 0)
+        metrics = self.fontMetrics()
+        if metrics.horizontalAdvance(text) <= text_rect.width():
+            return
+
+        painter = QPainter(self)
+        painter.fillRect(
+            text_rect.adjusted(-2, 2, 2, -2),
+            self.palette().brush(QPalette.ColorRole.Base),
+        )
+        painter.setPen(self.palette().color(QPalette.ColorRole.Text))
+        painter.drawText(
+            text_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            metrics.elidedText(
+                text,
+                Qt.TextElideMode.ElideMiddle,
+                text_rect.width(),
+            ),
+        )
+
+
+@dataclass(slots=True)
+class VideoQueueItem:
+    input_path: Path
+    output_path: Path
+    status: str = QUEUE_STATUS_PENDING
+    progress: int = 0
+    error_message: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    output_auto: bool = True
+
+
 class EnvironmentCheckWorker(QObject):
     log_line = Signal(str, str)
     finished = Signal(list)
@@ -218,8 +269,16 @@ class MainWindow(QMainWindow):
         self.logs_paused = False
         self.pending_log_render = False
         self.saved_splitter_sizes: list[int] | None = None
+        self.compact_log_height = 88
         self.detail_widgets: dict[str, Any] = {}
         self.detail_labels: dict[str, QLabel] = {}
+        self.queue_items: list[VideoQueueItem] = []
+        self.queue_base_config: PipelineConfig | None = None
+        self.active_queue_index: int | None = None
+        self.queue_active = False
+        self.queue_stop_requested = False
+        self.queue_started_at: datetime | None = None
+        self.stop_requested = False
         self._last_progress_value = 0
 
         self.setWindowTitle("Anime Enhancement")
@@ -252,11 +311,11 @@ class MainWindow(QMainWindow):
         self.log_area = self._build_log_area()
         self.splitter.addWidget(self.settings_area)
         self.splitter.addWidget(self.log_area)
-        self.splitter.setSizes([520, 300])
+        self.splitter.setSizes([650, 150])
         root.addWidget(self.splitter, 1)
 
         self.setCentralWidget(central)
-        self.statusBar().showMessage("Готово")
+        self.statusBar().showMessage("Готово · добавьте видео в очередь")
 
     def _build_header(self) -> QWidget:
         frame = QFrame()
@@ -275,36 +334,40 @@ class MainWindow(QMainWindow):
         layout.addWidget(title, 0, 0, 1, 4)
         layout.addWidget(subtitle, 1, 0, 1, 4)
 
+        self.progress_status_label = QLabel("Готово")
+        self.progress_status_label.setObjectName("progressStatus")
+        layout.addWidget(self.progress_status_label, 2, 0, 1, 4)
+
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        self.progress.setFormat("Общий прогресс: %p%")
-        layout.addWidget(self.progress, 2, 0, 1, 4)
+        self.progress.setFormat("%p%")
+        layout.addWidget(self.progress, 3, 0, 1, 4)
 
-        self.progress_summary_label = QLabel("Общий прогресс: 0%")
-        self.progress_summary_label.setObjectName("progressSummary")
-        self.progress_detail_label = QLabel("Этап: ожидание запуска")
+        self.progress_detail_label = QLabel(
+            "Общий прогресс: 0% · Этап: ожидание запуска"
+        )
         self.progress_detail_label.setObjectName("progressDetail")
         self.progress_detail_label.setWordWrap(True)
-        layout.addWidget(self.progress_summary_label, 3, 0, 1, 1)
-        layout.addWidget(self.progress_detail_label, 3, 1, 1, 3)
+        layout.addWidget(self.progress_detail_label, 4, 0, 1, 4)
 
         self.check_button = QPushButton("Проверить окружение")
         self.check_button.clicked.connect(self.check_environment_clicked)
-        self.start_button = QPushButton("Запустить обработку")
+        self.start_button = QPushButton("Запустить очередь")
         self.start_button.setObjectName("startButton")
+        self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_process)
         self.stop_button = QPushButton("Остановить")
         self.stop_button.setObjectName("stopButton")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_process)
 
-        layout.addWidget(self.check_button, 4, 0)
-        layout.addWidget(self.start_button, 4, 1)
-        layout.addWidget(self.stop_button, 4, 2)
+        layout.addWidget(self.check_button, 5, 0)
+        layout.addWidget(self.start_button, 5, 1)
+        layout.addWidget(self.stop_button, 5, 2)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        layout.addWidget(spacer, 4, 3)
+        layout.addWidget(spacer, 5, 3)
         return frame
 
     def _build_primary_panel(self) -> QWidget:
@@ -315,23 +378,24 @@ class MainWindow(QMainWindow):
         layout.setHorizontalSpacing(12)
         layout.setVerticalSpacing(10)
 
-        self.input_edit = QLineEdit()
+        # Hidden compatibility fields: PipelineConfig and old profile JSON still
+        # carry ORIGINAL_VIDEO/FINAL_VIDEO, while the visible UI uses the queue.
+        self.input_edit = ElidedPathLineEdit()
         self.input_edit.setToolTip(FIELD_TOOLTIPS["ORIGINAL_VIDEO"])
         self.input_edit.textChanged.connect(
             lambda value: self._sync_path_field("ORIGINAL_VIDEO", value)
         )
-        input_button = QPushButton("Выбрать видео")
-        input_button.setToolTip("Открыть окно выбора исходного видеофайла.")
-        input_button.clicked.connect(self.choose_input_video)
 
-        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit = ElidedPathLineEdit()
         self.output_dir_edit.setToolTip(
-            "Директория, куда будет сохранен итоговый файл. Имя файла рассчитывается автоматически."
+            "Общая директория для итоговых файлов очереди. Имена рассчитываются автоматически."
         )
         self.output_dir_edit.textChanged.connect(self._output_dir_changed)
-        output_button = QPushButton("Выбрать папку")
-        output_button.setToolTip("Открыть окно выбора директории для итогового видео.")
-        output_button.clicked.connect(self.choose_output_dir)
+        self.output_dir_button = QPushButton("Выбрать папку")
+        self.output_dir_button.setToolTip(
+            "Открыть окно выбора директории для итоговых видео."
+        )
+        self.output_dir_button.clicked.connect(self.choose_output_dir)
 
         self.primary_preset_combo = QComboBox()
         self.primary_preset_combo.setToolTip(
@@ -340,51 +404,129 @@ class MainWindow(QMainWindow):
         self.primary_preset_combo.addItems(PRESETS.keys())
         self.primary_preset_combo.currentTextChanged.connect(self.apply_selected_preset)
 
-        self.final_path_label = QLabel(
-            "Итоговый файл будет рассчитан после выбора входного видео."
+        self.primary_denoise = QCheckBox("Денойз")
+        self.primary_denoise.setToolTip(FIELD_TOOLTIPS["ENABLE_DENOISE"])
+        self.primary_denoise.toggled.connect(
+            lambda value: self._set_bool_field("ENABLE_DENOISE", value)
+        )
+        self.primary_interpolation = QCheckBox("Интерполяция")
+        self.primary_interpolation.setToolTip(FIELD_TOOLTIPS["ENABLE_INTERPOLATION"])
+        self.primary_interpolation.toggled.connect(
+            lambda value: self._set_bool_field("ENABLE_INTERPOLATION", value)
+        )
+
+        self.final_path_label = ElidedPathLineEdit(
+            "Итоговый файл рассчитывается в строках очереди."
         )
         self.final_path_label.setObjectName("computedPath")
-        self.final_path_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        self.final_path_label.setWordWrap(True)
+        self.final_path_label.setReadOnly(True)
+        self.final_path_label.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
-        layout.addWidget(
-            self._field_label("Входное видео", FIELD_TOOLTIPS["ORIGINAL_VIDEO"]),
-            0,
-            0,
+        self.queue_summary_label = QLabel(
+            f"0/{MAX_QUEUE_VIDEOS} видео · обработка строго по одному"
         )
-        layout.addWidget(self.input_edit, 0, 1)
-        layout.addWidget(input_button, 0, 2)
+        self.queue_summary_label.setObjectName("queueHint")
+        self.queue_table = QTableWidget(0, 6)
+        self.queue_table.setObjectName("queueTable")
+        self.queue_table.setHorizontalHeaderLabels(
+            ["№", "Входной файл", "Итоговый файл", "Статус", "Прогресс", "Действия"]
+        )
+        self.queue_table.setMinimumHeight(188)
+        self.queue_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.queue_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.queue_table.verticalHeader().setVisible(False)
+        self.queue_table.verticalHeader().setDefaultSectionSize(38)
+        self.queue_table.verticalHeader().setMinimumSectionSize(38)
+        self.queue_table.setAlternatingRowColors(False)
+        self.queue_table.setShowGrid(False)
+        self.queue_table.setToolTip(
+            "Видео в очереди будут обрабатываться последовательно, без параллельного запуска."
+        )
+        header = self.queue_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.queue_table.setColumnWidth(5, 112)
+
+        self.queue_empty_hint = QLabel(
+            "Очередь пуста. Добавьте одно или несколько видео через кнопку выше."
+        )
+        self.queue_empty_hint.setObjectName("queueHint")
+        self.queue_empty_hint.setWordWrap(True)
+
+        self.add_queue_button = QPushButton("+ Добавить видео")
+        self.add_queue_button.setToolTip(
+            f"Выбрать несколько видео и добавить их в очередь. Лимит: {MAX_QUEUE_VIDEOS}."
+        )
+        self.add_queue_button.clicked.connect(self.choose_queue_videos)
+        self.move_queue_up_button = QPushButton("↑")
+        self.move_queue_up_button.setToolTip("Поднять выбранное видео в очереди.")
+        self.move_queue_up_button.clicked.connect(self.move_selected_queue_item_up)
+        self.move_queue_down_button = QPushButton("↓")
+        self.move_queue_down_button.setToolTip("Опустить выбранное видео в очереди.")
+        self.move_queue_down_button.clicked.connect(self.move_selected_queue_item_down)
+        self.remove_queue_button = QPushButton("Удалить выбранное")
+        self.remove_queue_button.setToolTip("Удалить выбранное видео из очереди.")
+        self.remove_queue_button.clicked.connect(self.remove_selected_queue_item)
+        self.clear_queue_button = QPushButton("Очистить очередь")
+        self.clear_queue_button.setToolTip("Очистить очередь видео.")
+        self.clear_queue_button.clicked.connect(self.clear_queue)
+
         layout.addWidget(
             self._field_label(
                 "Директория результата",
-                "Директория, куда будет сохранен итоговый файл. Имя файла рассчитывается автоматически.",
+                "Общая директория для итоговых файлов очереди. Имена рассчитываются автоматически.",
             ),
-            1,
+            0,
             0,
         )
-        layout.addWidget(self.output_dir_edit, 1, 1)
-        layout.addWidget(output_button, 1, 2)
+        layout.addWidget(self.output_dir_edit, 0, 1)
+        layout.addWidget(self.output_dir_button, 0, 2)
         layout.addWidget(
             self._field_label(
                 "Пресет качества",
                 "Готовый набор безопасных параметров. При смене пресета обновляются быстрые и подробные настройки.",
             ),
-            2,
+            1,
             0,
         )
-        layout.addWidget(self.primary_preset_combo, 2, 1, 1, 2)
-        layout.addWidget(
-            self._field_label(
-                "Итоговый файл",
-                "Полный путь к файлу результата. Он рассчитывается из входного видео и директории результата.",
-            ),
-            3,
-            0,
-        )
-        layout.addWidget(self.final_path_label, 3, 1, 1, 2)
+        layout.addWidget(self.primary_preset_combo, 1, 1)
+
+        toggles = QHBoxLayout()
+        toggles.setContentsMargins(0, 0, 0, 0)
+        toggles.setSpacing(12)
+        toggles.addWidget(self.primary_denoise)
+        toggles.addWidget(self.primary_interpolation)
+        toggles.addStretch()
+        layout.addLayout(toggles, 1, 2)
+
+        queue_header = QHBoxLayout()
+        queue_header.setContentsMargins(0, 10, 0, 0)
+        queue_header.setSpacing(8)
+        queue_title = QLabel("Очередь видео")
+        queue_title.setObjectName("sectionTitle")
+        queue_header.addWidget(queue_title)
+        queue_header.addWidget(self.queue_summary_label)
+        queue_header.addStretch()
+        queue_header.addWidget(self.add_queue_button)
+        queue_header.addWidget(self.move_queue_up_button)
+        queue_header.addWidget(self.move_queue_down_button)
+        queue_header.addWidget(self.remove_queue_button)
+        queue_header.addWidget(self.clear_queue_button)
+        layout.addLayout(queue_header, 2, 0, 1, 3)
+        layout.addWidget(self.queue_table, 3, 0, 1, 3)
+        layout.addWidget(self.queue_empty_hint, 4, 0, 1, 3)
         layout.setColumnStretch(1, 1)
+        self._refresh_queue_ui()
         return frame
 
     def _build_settings_area(self) -> QWidget:
@@ -401,9 +543,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        group = QGroupBox("Безопасные настройки")
-        group.setObjectName("settingsCard")
-        form = QFormLayout(group)
+        card, card_layout = self._section_card("Безопасные настройки")
+        form = QFormLayout()
+        self._configure_settings_form(form)
 
         self.simple_denoise = QCheckBox("Включить денойз waifu2x")
         self.simple_denoise.setToolTip(FIELD_TOOLTIPS["ENABLE_DENOISE"])
@@ -425,7 +567,8 @@ class MainWindow(QMainWindow):
             self.simple_interpolation,
         )
 
-        layout.addWidget(group)
+        card_layout.addLayout(form)
+        layout.addWidget(card)
         note = QLabel(
             "Пресет сверху является главным: при его смене обновляются быстрые и подробные параметры."
         )
@@ -443,10 +586,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(16, 16, 16, 16)
 
-        group = QGroupBox("Все параметры пайплайна")
-        group.setObjectName("settingsCard")
-        form = QFormLayout(group)
-        form.setSpacing(9)
+        card, card_layout = self._section_card("Все параметры пайплайна")
+        form = QFormLayout()
+        self._configure_settings_form(form)
         for name in DETAIL_FIELDS:
             widget = self._create_detail_widget(name)
             widget.setToolTip(FIELD_TOOLTIPS.get(name, name))
@@ -457,7 +599,8 @@ class MainWindow(QMainWindow):
             )
             self.detail_labels[name] = label
             form.addRow(label, widget)
-        layout.addWidget(group)
+        card_layout.addLayout(form)
+        layout.addWidget(card)
         layout.addStretch()
         scroll.setWidget(page)
         return scroll
@@ -469,10 +612,10 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        group = QGroupBox("JSON-профили")
-        group.setObjectName("settingsCard")
-        form = QFormLayout(group)
+        card, card_layout = self._section_card("JSON-профили")
         buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(10)
         import_button = QPushButton("Импортировать")
         import_button.setObjectName("profileButton")
         import_button.setMinimumHeight(38)
@@ -485,15 +628,14 @@ class MainWindow(QMainWindow):
         export_button.clicked.connect(self.export_profile_clicked)
         buttons.addWidget(import_button)
         buttons.addWidget(export_button)
-        form.addRow(
-            self._form_label(
-                "Действия",
-                "Импортирует профиль из выбранного файла или экспортирует текущие настройки.",
-            ),
-            self._layout_widget(buttons),
+        card_layout.addWidget(
+            self._hint_label(
+                "Импортируйте профиль из выбранного файла или экспортируйте текущие настройки."
+            )
         )
+        card_layout.addLayout(buttons)
 
-        layout.addWidget(group)
+        layout.addWidget(card)
         text = QLabel(
             f"При запуске GUI сохраняет служебный профиль в {self.profile_dir}. "
             "Импорт/экспорт позволяет работать с любым JSON-файлом профиля."
@@ -556,8 +698,33 @@ class MainWindow(QMainWindow):
         self.logs = QTextEdit()
         self.logs.setReadOnly(True)
         self.logs.setObjectName("logsText")
+        self.logs.setMinimumHeight(64)
+        self.logs.setMaximumHeight(self.compact_log_height)
         layout.addWidget(self.logs, 1)
         return frame
+
+    def _section_card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("settingsCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
+
+        label = QLabel(title)
+        label.setObjectName("cardTitle")
+        layout.addWidget(label)
+        return card, layout
+
+    def _configure_settings_form(self, form: QFormLayout) -> None:
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(20)
+        form.setVerticalSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setLabelAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
 
     def _create_detail_widget(self, name: str) -> QWidget:
         if name in {
@@ -593,6 +760,11 @@ class MainWindow(QMainWindow):
                 spin.setRange(1, 8)
             if name == "INTERMEDIATE_VIDEO_CRF":
                 spin.setRange(0, 51)
+            spin.setMinimumWidth(170)
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
             spin.valueChanged.connect(
                 lambda value, field=name: self._sync_config_from_widget(field, value)
             )
@@ -628,13 +800,27 @@ class MainWindow(QMainWindow):
             combo = QComboBox()
             combo.addItems(combos[name])
             combo.setEditable(True)
+            combo.setMinimumWidth(190)
+            combo.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
             combo.currentTextChanged.connect(
                 lambda value, field=name: self._sync_config_from_widget(field, value)
             )
             return combo
-        edit = QLineEdit()
+        edit = (
+            ElidedPathLineEdit()
+            if name in {"ORIGINAL_VIDEO", "FINAL_VIDEO"}
+            else QLineEdit()
+        )
         if name in {"ORIGINAL_VIDEO", "FINAL_VIDEO"}:
             edit.setReadOnly(True)
+        edit.setMinimumWidth(190)
+        edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         edit.textChanged.connect(
             lambda value, field=name: self._sync_config_from_widget(field, value)
         )
@@ -650,34 +836,50 @@ class MainWindow(QMainWindow):
     def _form_label(self, text: str, tooltip: str = "") -> QLabel:
         label = QLabel(text)
         label.setObjectName("formLabel")
+        label.setMinimumWidth(150)
+        label.setMaximumWidth(230)
+        label.setWordWrap(True)
+        label.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred,
+        )
         if tooltip:
             label.setToolTip(tooltip)
         return label
 
-    def _layout_widget(self, layout: QHBoxLayout) -> QWidget:
-        widget = QWidget()
-        widget.setObjectName("cardRow")
-        widget.setLayout(layout)
-        return widget
+    def _hint_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("hint")
+        label.setWordWrap(True)
+        return label
 
     def _populate_from_config(self, config: PipelineConfig) -> None:
         self.config = config
         input_blocker = QSignalBlocker(self.input_edit)
         output_blocker = QSignalBlocker(self.output_dir_edit)
         preset_blocker = QSignalBlocker(self.primary_preset_combo)
+        primary_denoise_blocker = QSignalBlocker(self.primary_denoise)
+        primary_interpolation_blocker = QSignalBlocker(self.primary_interpolation)
         denoise_blocker = QSignalBlocker(self.simple_denoise)
         interpolation_blocker = QSignalBlocker(self.simple_interpolation)
         self.input_edit.setText(config.ORIGINAL_VIDEO)
         self.output_dir_edit.setText(str(Path(config.FINAL_VIDEO).parent))
+        self._update_path_tooltips()
         self.primary_preset_combo.setCurrentText(self._matching_preset_name(config))
+        self.primary_denoise.setChecked(config.ENABLE_DENOISE)
+        self.primary_interpolation.setChecked(config.ENABLE_INTERPOLATION)
         self.simple_denoise.setChecked(config.ENABLE_DENOISE)
         self.simple_interpolation.setChecked(config.ENABLE_INTERPOLATION)
         del input_blocker
         del output_blocker
         del preset_blocker
+        del primary_denoise_blocker
+        del primary_interpolation_blocker
         del denoise_blocker
         del interpolation_blocker
-        self._update_final_video_from_primary_fields()
+        if self.queue_items and not self.queue_active and self.process is None:
+            self._update_pending_queue_outputs()
+        self._sync_config_paths_from_queue_or_primary()
 
         values = self.config.to_dict()
         for name, widget in self.detail_widgets.items():
@@ -707,8 +909,13 @@ class MainWindow(QMainWindow):
                 values[name] = widget.currentText().strip()
             elif isinstance(widget, QLineEdit):
                 values[name] = widget.text().strip()
-        values["ORIGINAL_VIDEO"] = self.input_edit.text().strip()
-        values["FINAL_VIDEO"] = self.config.FINAL_VIDEO
+        queue_item = self._queue_item_for_config()
+        if queue_item is not None:
+            values["ORIGINAL_VIDEO"] = str(queue_item.input_path)
+            values["FINAL_VIDEO"] = str(queue_item.output_path)
+        else:
+            values["ORIGINAL_VIDEO"] = self.input_edit.text().strip()
+            values["FINAL_VIDEO"] = self.config.FINAL_VIDEO
         self.config = PipelineConfig(**values)
         return self.config
 
@@ -717,6 +924,7 @@ class MainWindow(QMainWindow):
         if field == "ORIGINAL_VIDEO":
             self._sync_output_dir_to_input_parent(value)
             self._update_final_video_from_primary_fields()
+        self._update_path_tooltips()
 
     def _sync_config_from_widget(self, field: str, value: Any) -> None:
         values = self.config.to_dict()
@@ -726,6 +934,8 @@ class MainWindow(QMainWindow):
             self.input_edit.setText(str(value))
         elif field == "FINAL_VIDEO":
             self._set_detail_text("FINAL_VIDEO", str(value))
+        if field in {"ORIGINAL_VIDEO", "FINAL_VIDEO"}:
+            self._update_path_tooltips()
 
     def _set_detail_text(self, field: str, value: str) -> None:
         widget = self.detail_widgets.get(field)
@@ -735,7 +945,9 @@ class MainWindow(QMainWindow):
             widget.blockSignals(False)
 
     def _output_dir_changed(self, _value: str) -> None:
-        self._update_final_video_from_primary_fields()
+        self._update_pending_queue_outputs()
+        self._sync_config_paths_from_queue_or_primary()
+        self._refresh_queue_ui()
 
     def _sync_output_dir_to_input_parent(self, input_path_text: str) -> None:
         input_path_text = input_path_text.strip()
@@ -764,8 +976,65 @@ class MainWindow(QMainWindow):
         values["FINAL_VIDEO"] = str(final_path)
         self.config = PipelineConfig(**values)
         self.final_path_label.setText(str(final_path))
+        self.final_path_label.setToolTip(str(final_path))
         self._set_detail_text("ORIGINAL_VIDEO", self.config.ORIGINAL_VIDEO)
         self._set_detail_text("FINAL_VIDEO", self.config.FINAL_VIDEO)
+        self._update_path_tooltips()
+
+    def _queue_item_for_config(self) -> VideoQueueItem | None:
+        if not self.queue_items:
+            return None
+        if self.active_queue_index is not None:
+            return self.queue_items[self.active_queue_index]
+        if hasattr(self, "queue_table"):
+            row = self.queue_table.currentRow()
+            if 0 <= row < len(self.queue_items):
+                return self.queue_items[row]
+        return self.queue_items[0]
+
+    def _sync_config_paths_from_queue_or_primary(self) -> None:
+        queue_item = self._queue_item_for_config()
+        if queue_item is None:
+            self._update_final_video_from_primary_fields()
+            return
+
+        input_blocker = QSignalBlocker(self.input_edit)
+        self.input_edit.setText(str(queue_item.input_path))
+        del input_blocker
+        values = self.config.to_dict()
+        values["ORIGINAL_VIDEO"] = str(queue_item.input_path)
+        values["FINAL_VIDEO"] = str(queue_item.output_path)
+        self.config = PipelineConfig(**values)
+        self.final_path_label.setText(str(queue_item.output_path))
+        self.final_path_label.setToolTip(str(queue_item.output_path))
+        self._set_detail_text("ORIGINAL_VIDEO", self.config.ORIGINAL_VIDEO)
+        self._set_detail_text("FINAL_VIDEO", self.config.FINAL_VIDEO)
+        self._update_path_tooltips()
+
+    def _update_path_tooltips(self) -> None:
+        input_path = self.input_edit.text().strip()
+        output_dir = self.output_dir_edit.text().strip()
+        if input_path:
+            self.input_edit.setToolTip(
+                f"{FIELD_TOOLTIPS['ORIGINAL_VIDEO']}\n\n{input_path}"
+            )
+            original_detail = self.detail_widgets.get("ORIGINAL_VIDEO")
+            if isinstance(original_detail, QLineEdit):
+                original_detail.setToolTip(
+                    f"{FIELD_TOOLTIPS['ORIGINAL_VIDEO']}\n\n{input_path}"
+                )
+        if output_dir:
+            self.output_dir_edit.setToolTip(
+                "Директория, куда будет сохранен итоговый файл. Имя файла рассчитывается автоматически."
+                f"\n\n{output_dir}"
+            )
+        final_path = self.config.FINAL_VIDEO.strip()
+        if final_path:
+            final_detail = self.detail_widgets.get("FINAL_VIDEO")
+            if isinstance(final_detail, QLineEdit):
+                final_detail.setToolTip(
+                    f"{FIELD_TOOLTIPS['FINAL_VIDEO']}\n\n{final_path}"
+                )
 
     def _matching_preset_name(self, config: PipelineConfig) -> str:
         for name, values in PRESETS.items():
@@ -778,9 +1047,28 @@ class MainWindow(QMainWindow):
         return next(iter(PRESETS))
 
     def _set_bool_field(self, field: str, value: bool) -> None:
+        primary_map = {
+            "ENABLE_DENOISE": getattr(self, "primary_denoise", None),
+            "ENABLE_INTERPOLATION": getattr(self, "primary_interpolation", None),
+        }
+        simple_map = {
+            "ENABLE_DENOISE": getattr(self, "simple_denoise", None),
+            "ENABLE_INTERPOLATION": getattr(self, "simple_interpolation", None),
+        }
+        for mapped_widget in (primary_map.get(field), simple_map.get(field)):
+            if (
+                isinstance(mapped_widget, QCheckBox)
+                and mapped_widget.isChecked() != value
+            ):
+                mapped_widget.blockSignals(True)
+                mapped_widget.setChecked(value)
+                mapped_widget.blockSignals(False)
+
         widget = self.detail_widgets.get(field)
-        if isinstance(widget, QCheckBox):
+        if isinstance(widget, QCheckBox) and widget.isChecked() != value:
+            widget.blockSignals(True)
             widget.setChecked(value)
+            widget.blockSignals(False)
         self._sync_config_from_widget(field, value)
 
     def _set_text_field(self, field: str, value: str) -> None:
@@ -792,23 +1080,306 @@ class MainWindow(QMainWindow):
     def choose_input_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Выберите входное видео",
-            str(
-                Path(self.input_edit.text()).parent
-                if self.input_edit.text()
-                else self.data_dir / "input_video"
-            ),
-            "Видео (*.mp4 *.mkv *.avi *.mov *.webm);;Все файлы (*)",
+            "Добавить видео в очередь",
+            str(self._queue_dialog_dir()),
+            "Видео (*.mp4 *.mkv *.avi *.mov *.webm *.mxf);;Все файлы (*)",
         )
         if path:
-            self._apply_selected_input_video(Path(path))
+            self._add_video_paths_to_queue([Path(path)])
 
     def _apply_selected_input_video(self, path: Path) -> None:
         input_blocker = QSignalBlocker(self.input_edit)
         self.input_edit.setText(str(path))
         del input_blocker
-        self._sync_output_dir_to_input_parent(str(path))
-        self._update_final_video_from_primary_fields()
+        if not self.queue_items and self.process is None:
+            self._add_video_paths_to_queue([path])
+        else:
+            self._sync_config_paths_from_queue_or_primary()
+
+    def choose_queue_videos(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Добавить видео в очередь",
+            str(self._queue_dialog_dir()),
+            "Видео (*.mp4 *.mkv *.avi *.mov *.webm *.mxf);;Все файлы (*)",
+        )
+        self._add_video_paths_to_queue(Path(path) for path in paths)
+
+    def add_current_video_to_queue(self) -> None:
+        input_text = self.input_edit.text().strip()
+        if not input_text:
+            QMessageBox.information(
+                self,
+                "Очередь видео",
+                "Сначала выберите входное видео или добавьте файлы через кнопку выбора.",
+            )
+            return
+        self._add_video_paths_to_queue([Path(input_text)])
+
+    def _queue_dialog_dir(self) -> Path:
+        if self.queue_items:
+            return self.queue_items[-1].input_path.parent
+        input_text = self.input_edit.text().strip()
+        if input_text:
+            return Path(input_text).parent
+        return self.data_dir / "input_video"
+
+    def _add_video_paths_to_queue(self, paths: Any) -> None:
+        if self.process is not None or self.queue_active:
+            QMessageBox.information(
+                self,
+                "Очередь видео",
+                "Во время обработки очередь нельзя менять.",
+            )
+            return
+
+        existing = {item.input_path.resolve() for item in self.queue_items}
+        added = 0
+        skipped = 0
+        for raw_path in paths:
+            if len(self.queue_items) >= MAX_QUEUE_VIDEOS:
+                skipped += 1
+                continue
+            path = Path(raw_path)
+            resolved = path.resolve()
+            if resolved in existing:
+                skipped += 1
+                continue
+            self.queue_items.append(
+                VideoQueueItem(path, self._auto_output_path_for_video(path))
+            )
+            existing.add(resolved)
+            added += 1
+            self._append_log("info", f"В очередь добавлено видео: {path}")
+
+        if skipped:
+            self._append_log(
+                "info",
+                f"Пропущено видео для очереди: {skipped}. "
+                f"Лимит очереди: {MAX_QUEUE_VIDEOS}.",
+            )
+        if added and hasattr(self, "queue_table"):
+            self.queue_table.selectRow(len(self.queue_items) - 1)
+            self._sync_config_paths_from_queue_or_primary()
+        self._refresh_queue_ui()
+
+    def remove_selected_queue_item(self) -> None:
+        if self.process is not None or self.queue_active:
+            return
+        row = self.queue_table.currentRow()
+        self._remove_queue_item(row)
+
+    def _remove_queue_item(self, row: int) -> None:
+        if 0 <= row < len(self.queue_items):
+            removed = self.queue_items.pop(row)
+            self._append_log("info", f"Видео удалено из очереди: {removed.input_path}")
+            next_row = min(row, len(self.queue_items) - 1)
+            self._refresh_queue_ui()
+            if next_row >= 0:
+                self.queue_table.selectRow(next_row)
+            self._sync_config_paths_from_queue_or_primary()
+
+    def move_selected_queue_item_up(self) -> None:
+        self._move_queue_item(self.queue_table.currentRow(), -1)
+
+    def move_selected_queue_item_down(self) -> None:
+        self._move_queue_item(self.queue_table.currentRow(), 1)
+
+    def _move_queue_item(self, row: int, direction: int) -> None:
+        if self.process is not None or self.queue_active:
+            return
+        target = row + direction
+        if not (
+            0 <= row < len(self.queue_items) and 0 <= target < len(self.queue_items)
+        ):
+            return
+        self.queue_items[row], self.queue_items[target] = (
+            self.queue_items[target],
+            self.queue_items[row],
+        )
+        self._append_log(
+            "info",
+            f"Очередь: видео перемещено на позицию {target + 1}: "
+            f"{self.queue_items[target].input_path.name}",
+        )
+        self._refresh_queue_ui()
+        self.queue_table.selectRow(target)
+        self._sync_config_paths_from_queue_or_primary()
+
+    def clear_queue(self) -> None:
+        if self.process is not None or self.queue_active:
+            return
+        if self.queue_items:
+            self.queue_items.clear()
+            self.active_queue_index = None
+            self.queue_active = False
+            self.queue_base_config = None
+            self.queue_started_at = None
+            self._append_log("info", "Очередь видео очищена.")
+            self._refresh_queue_ui()
+            self._sync_config_paths_from_queue_or_primary()
+
+    def _refresh_queue_ui(self, running: bool | None = None) -> None:
+        if not hasattr(self, "queue_table"):
+            return
+        selected_row = self.queue_table.currentRow()
+        self.queue_table.setRowCount(len(self.queue_items))
+        for index, item in enumerate(self.queue_items):
+            self.queue_table.setRowHeight(index, 38)
+            status = item.status
+            if index == self.active_queue_index and status == QUEUE_STATUS_RUNNING:
+                status = f"▶ {status}"
+            self.queue_table.setItem(
+                index,
+                0,
+                self._queue_cell(
+                    str(index + 1),
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                ),
+            )
+            self.queue_table.setItem(
+                index,
+                1,
+                self._queue_cell(item.input_path.name, str(item.input_path)),
+            )
+            self.queue_table.setItem(
+                index,
+                2,
+                self._queue_cell(item.output_path.name, str(item.output_path)),
+            )
+            self.queue_table.setItem(
+                index,
+                3,
+                self._queue_cell(
+                    status,
+                    item.error_message or status,
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                ),
+            )
+            self.queue_table.setItem(
+                index,
+                4,
+                self._queue_cell(
+                    f"{item.progress}%",
+                    f"Прогресс видео: {item.progress}%",
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                ),
+            )
+            self.queue_table.setCellWidget(index, 5, self._queue_actions_widget(index))
+
+        if running is None:
+            running = self.process is not None
+        queued_count = len(self.queue_items)
+        active_text = "обработка строго по одному"
+        if self.queue_active and self.active_queue_index is not None:
+            active_text = f"сейчас {self.active_queue_index + 1}/{queued_count}"
+        self.queue_summary_label.setText(
+            f"{queued_count}/{MAX_QUEUE_VIDEOS} видео · {active_text}"
+        )
+        self.start_button.setText("Запустить очередь")
+        self.start_button.setToolTip(
+            "Запустить последовательную обработку очереди."
+            if self.queue_items
+            else "Добавьте видео в очередь, чтобы запустить обработку."
+        )
+        can_edit_queue = not running and not self.queue_active
+        self.start_button.setEnabled(can_edit_queue and queued_count > 0)
+        self.add_queue_button.setEnabled(
+            can_edit_queue and queued_count < MAX_QUEUE_VIDEOS
+        )
+        self.move_queue_up_button.setEnabled(can_edit_queue and queued_count > 1)
+        self.move_queue_down_button.setEnabled(can_edit_queue and queued_count > 1)
+        self.remove_queue_button.setEnabled(can_edit_queue and queued_count > 0)
+        self.clear_queue_button.setEnabled(can_edit_queue and queued_count > 0)
+        self.queue_empty_hint.setVisible(queued_count == 0)
+        if self.active_queue_index is not None and queued_count:
+            self.queue_table.selectRow(self.active_queue_index)
+        elif 0 <= selected_row < queued_count:
+            self.queue_table.selectRow(selected_row)
+
+    def _queue_cell(
+        self,
+        text: str,
+        tooltip: str = "",
+        *,
+        alignment: Qt.AlignmentFlag = Qt.AlignmentFlag.AlignVCenter
+        | Qt.AlignmentFlag.AlignLeft,
+    ) -> QTableWidgetItem:
+        cell = QTableWidgetItem(text)
+        cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        cell.setTextAlignment(alignment)
+        if tooltip:
+            cell.setToolTip(tooltip)
+        return cell
+
+    def _queue_actions_widget(self, index: int) -> QWidget:
+        widget = QWidget()
+        widget.setObjectName("queueActions")
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(4)
+        can_edit = self.process is None and not self.queue_active
+
+        up = QPushButton("↑")
+        up.setObjectName("queueActionButton")
+        up.setToolTip("Поднять видео")
+        up.setFixedSize(28, 26)
+        up.setEnabled(can_edit and index > 0)
+        up.clicked.connect(
+            lambda _checked=False, row=index: self._move_queue_item(row, -1)
+        )
+        down = QPushButton("↓")
+        down.setObjectName("queueActionButton")
+        down.setToolTip("Опустить видео")
+        down.setFixedSize(28, 26)
+        down.setEnabled(can_edit and index < len(self.queue_items) - 1)
+        down.clicked.connect(
+            lambda _checked=False, row=index: self._move_queue_item(row, 1)
+        )
+        remove = QPushButton("×")
+        remove.setObjectName("queueActionButton")
+        remove.setToolTip("Удалить видео из очереди")
+        remove.setFixedSize(28, 26)
+        remove.setEnabled(can_edit)
+        remove.clicked.connect(
+            lambda _checked=False, row=index: self._remove_queue_item(row)
+        )
+
+        layout.addWidget(up)
+        layout.addWidget(down)
+        layout.addWidget(remove)
+        return widget
+
+    def _update_pending_queue_outputs(self) -> None:
+        for item in self.queue_items:
+            if item.output_auto and item.status == QUEUE_STATUS_PENDING:
+                item.output_path = self._auto_output_path_for_video(item.input_path)
+
+    def _auto_output_path_for_video(self, input_path: Path) -> Path:
+        output_dir_text = self.output_dir_edit.text().strip()
+        output_dir = Path(output_dir_text) if output_dir_text else input_path.parent
+        return output_dir / f"{input_path.stem}_enhanced.mp4"
+
+    def _final_path_for_video(self, input_path: Path) -> Path:
+        return self._auto_output_path_for_video(input_path)
+
+    def _config_for_queue_item(
+        self, item: VideoQueueItem, base_config: PipelineConfig | None = None
+    ) -> PipelineConfig:
+        config = base_config or self._collect_config()
+        values = config.to_dict()
+        values["ORIGINAL_VIDEO"] = str(item.input_path)
+        values["FINAL_VIDEO"] = str(item.output_path)
+        return PipelineConfig(**values)
+
+    def _config_for_video(
+        self, input_path: Path, base_config: PipelineConfig | None = None
+    ) -> PipelineConfig:
+        config = base_config or self._collect_config()
+        values = config.to_dict()
+        values["ORIGINAL_VIDEO"] = str(input_path)
+        values["FINAL_VIDEO"] = str(self._auto_output_path_for_video(input_path))
+        return PipelineConfig(**values)
 
     def choose_output_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -818,7 +1389,9 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.output_dir_edit.setText(path)
-            self._update_final_video_from_primary_fields()
+            self._update_pending_queue_outputs()
+            self._sync_config_paths_from_queue_or_primary()
+            self._refresh_queue_ui()
 
     def apply_selected_preset(self, preset_name: str) -> None:
         if not preset_name:
@@ -918,11 +1491,20 @@ class MainWindow(QMainWindow):
         if self.process is not None:
             QMessageBox.warning(self, "Запуск невозможен", "Процесс уже выполняется.")
             return
-        config = self._collect_config()
+        if not self.queue_items:
+            QMessageBox.information(
+                self,
+                "Очередь видео",
+                "Добавьте хотя бы одно видео в очередь перед запуском.",
+            )
+            return
+        self.start_queue()
+
+    def _confirm_config_can_start(self, config: PipelineConfig) -> bool:
         errors = config.validate(require_input_exists=True)
         if errors:
             QMessageBox.warning(self, "Ошибки в настройках", "\n".join(errors))
-            return
+            return False
         output_path = Path(config.FINAL_VIDEO)
         if output_path.exists():
             result = QMessageBox.question(
@@ -931,7 +1513,7 @@ class MainWindow(QMainWindow):
                 f"Итоговый файл уже существует:\n{output_path}\n\nПерезаписать его?",
             )
             if result != QMessageBox.StandardButton.Yes:
-                return
+                return False
         checks = check_environment(config, self.project_root)
         if has_errors(checks):
             self._append_log(
@@ -943,13 +1525,184 @@ class MainWindow(QMainWindow):
                 "Окружение не готово",
                 "Исправьте ошибки окружения перед запуском.",
             )
+            return False
+        return True
+
+    def start_queue(self) -> None:
+        queue_configs = self._prepare_queue_configs()
+        if queue_configs is None:
+            return
+        self.queue_base_config = self._collect_config()
+        for item in self.queue_items:
+            item.status = QUEUE_STATUS_PENDING
+            item.progress = 0
+            item.error_message = None
+            item.started_at = None
+            item.finished_at = None
+        self.queue_active = True
+        self.queue_stop_requested = False
+        self.active_queue_index = None
+        self.queue_started_at = datetime.now()
+        self._append_log(
+            "info",
+            f"Очередь: подготовлено видео к обработке: {len(self.queue_items)}.",
+        )
+        self._refresh_queue_ui()
+        self._start_next_queue_item()
+
+    def _prepare_queue_configs(self) -> list[PipelineConfig] | None:
+        if not self.queue_items:
+            QMessageBox.information(self, "Очередь видео", "Очередь пуста.")
+            return None
+
+        base_config = self._collect_config()
+        configs = [
+            self._config_for_queue_item(item, base_config) for item in self.queue_items
+        ]
+        validation_errors: list[str] = []
+        output_paths: list[Path] = []
+        for config in configs:
+            item_errors = config.validate(require_input_exists=True)
+            if item_errors:
+                validation_errors.extend(
+                    f"{Path(config.ORIGINAL_VIDEO).name}: {error}"
+                    for error in item_errors
+                )
+            output_paths.append(Path(config.FINAL_VIDEO))
+
+        if validation_errors:
+            QMessageBox.warning(
+                self,
+                "Ошибки в очереди",
+                "\n".join(validation_errors[:8]),
+            )
+            return None
+
+        duplicate_outputs = sorted(
+            {
+                path
+                for path in output_paths
+                if sum(candidate == path for candidate in output_paths) > 1
+            }
+        )
+        if duplicate_outputs:
+            QMessageBox.warning(
+                self,
+                "Очередь видео",
+                "В очереди есть одинаковые итоговые файлы:\n"
+                + "\n".join(str(path) for path in duplicate_outputs[:5]),
+            )
+            return None
+
+        existing_outputs = [path for path in output_paths if path.exists()]
+        if existing_outputs:
+            preview = "\n".join(str(path) for path in existing_outputs[:5])
+            suffix = "\n..." if len(existing_outputs) > 5 else ""
+            result = QMessageBox.question(
+                self,
+                "Файлы уже существуют",
+                "Некоторые итоговые файлы уже существуют и будут перезаписаны:\n"
+                f"{preview}{suffix}\n\nПродолжить?",
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                return None
+
+        checks = check_environment(configs[0], self.project_root)
+        if has_errors(checks):
+            self._append_log(
+                "error", "Запуск очереди остановлен: проверка окружения не пройдена."
+            )
+            self._append_log("error", format_report(checks))
+            QMessageBox.warning(
+                self,
+                "Окружение не готово",
+                "Исправьте ошибки окружения перед запуском очереди.",
+            )
+            return None
+        return configs
+
+    def _start_next_queue_item(self) -> None:
+        if not self.queue_active or self.queue_stop_requested:
+            self._finish_queue("Очередь остановлена.")
             return
 
+        next_index = (
+            0 if self.active_queue_index is None else self.active_queue_index + 1
+        )
+        if next_index >= len(self.queue_items):
+            self._finish_queue("Очередь завершена.", completed=True)
+            self.statusBar().showMessage("Готово · очередь завершена")
+            return
+
+        self.active_queue_index = next_index
+        item = self.queue_items[next_index]
+        item.status = QUEUE_STATUS_RUNNING
+        item.progress = 0
+        item.error_message = None
+        item.started_at = datetime.now()
+        base_config = self.queue_base_config or self._collect_config()
+        config = self._config_for_queue_item(item, base_config)
+        self._populate_from_config(config)
+        self._refresh_queue_ui()
+
         profile_path = self.profile_dir / "last_run_profile.json"
+        start_status = f"Этап: запуск; Файл: {item.input_path.name}"
+        self._append_log(
+            "info",
+            f"Очередь: старт обработки {next_index + 1}/{len(self.queue_items)}: "
+            f"{item.input_path}",
+        )
+        if not self._start_config_process(config, profile_path, start_status):
+            item.status = QUEUE_STATUS_ERROR
+            item.error_message = "Ошибка запуска"
+            item.finished_at = datetime.now()
+            self._finish_queue("Очередь остановлена: ошибка запуска.")
+
+    def _finish_queue(self, message: str, *, completed: bool = False) -> None:
+        success_count = sum(
+            1 for item in self.queue_items if item.status == QUEUE_STATUS_DONE
+        )
+        error_count = sum(
+            1 for item in self.queue_items if item.status == QUEUE_STATUS_ERROR
+        )
+        elapsed_text = self._queue_elapsed_text()
+        self.queue_active = False
+        self.queue_stop_requested = False
+        self.queue_base_config = None
+        self.active_queue_index = None
+        self.output_dir_edit.setEnabled(True)
+        self.output_dir_button.setEnabled(True)
+        self.primary_preset_combo.setEnabled(True)
+        self.primary_denoise.setEnabled(True)
+        self.primary_interpolation.setEnabled(True)
+        if completed:
+            self._append_log(
+                "info",
+                f"Очередь завершена: успешно {success_count}, ошибок {error_count}, "
+                f"время {elapsed_text}.",
+            )
+            self._set_main_progress(100, f"ГОТОВО: очередь завершена за {elapsed_text}")
+        else:
+            self._append_log("info", message)
+        self._refresh_queue_ui()
+
+    def _queue_elapsed_text(self) -> str:
+        if self.queue_started_at is None:
+            return "00:00:00"
+        elapsed = datetime.now() - self.queue_started_at
+        total_seconds = max(0, int(elapsed.total_seconds()))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def _start_config_process(
+        self, config: PipelineConfig, profile_path: Path, start_status: str
+    ) -> bool:
         config.save_json(profile_path)
         self._set_running_state(True)
+        self.stop_requested = False
         self._last_progress_value = 0
-        self._set_main_progress(0, "Запуск обработки")
+        self._set_main_progress(0, start_status)
         self._append_log("info", f"Запуск пайплайна с профилем: {profile_path}")
 
         configure_app_local_tools(self.project_root)
@@ -959,7 +1712,7 @@ class MainWindow(QMainWindow):
             self._append_log("critical", str(error))
             QMessageBox.critical(self, "Запуск невозможен", str(error))
             self._set_running_state(False)
-            return
+            return False
 
         process = QProcess(self)
         process.setProgram(str(program))
@@ -983,6 +1736,8 @@ class MainWindow(QMainWindow):
             self._append_log("critical", "Не удалось запустить процесс Python.")
             self._set_running_state(False)
             self.process = None
+            return False
+        return True
 
     def _pipeline_command(self, profile_path: Path) -> tuple[Path, list[str], Path]:
         if is_frozen():
@@ -1013,6 +1768,14 @@ class MainWindow(QMainWindow):
     def stop_process(self) -> None:
         if self.process is None:
             return
+        self.stop_requested = True
+        if self.queue_active:
+            self.queue_stop_requested = True
+            active_index = self.active_queue_index
+            for index, item in enumerate(self.queue_items):
+                if active_index is None or index > active_index:
+                    item.status = QUEUE_STATUS_CANCELLED
+            self._refresh_queue_ui()
         self._append_log("error", "Пользователь запросил остановку процесса.")
         self.process.terminate()
         QTimer.singleShot(5000, self._kill_if_running)
@@ -1044,16 +1807,56 @@ class MainWindow(QMainWindow):
         if self.process_output_buffer:
             self._handle_process_line(decode_process_line(self.process_output_buffer))
             self.process_output_buffer = b""
-        if exit_status == QProcess.ExitStatus.NormalExit and exit_code == 0:
+        success = exit_status == QProcess.ExitStatus.NormalExit and exit_code == 0
+        was_queue_item = self.queue_active and self.active_queue_index is not None
+        stopped_by_user = self.stop_requested
+        if success:
             self._append_log("info", "Процесс завершен успешно.")
             if self.progress.value() < 100:
-                self._set_main_progress(100, "Обработка завершена")
-            self.statusBar().showMessage("Обработка завершена")
+                self._set_main_progress(100, "ГОТОВО: видео обработано")
         else:
             self._append_log("critical", f"Процесс завершился с кодом {exit_code}.")
-            self.statusBar().showMessage("Обработка завершилась с ошибкой")
         self.process = None
         self._set_running_state(False)
+        if was_queue_item:
+            self._handle_queue_item_finished(success, stopped_by_user)
+        elif success:
+            self.statusBar().showMessage("Готово · файл сохранен")
+        else:
+            self.statusBar().showMessage("Ошибка · см. логи")
+        self.stop_requested = False
+
+    def _handle_queue_item_finished(self, success: bool, stopped_by_user: bool) -> None:
+        if self.active_queue_index is None:
+            self._finish_queue("Очередь остановлена.")
+            return
+
+        item = self.queue_items[self.active_queue_index]
+        if stopped_by_user:
+            item.status = QUEUE_STATUS_CANCELLED
+            item.finished_at = datetime.now()
+            self._finish_queue("Очередь остановлена пользователем.")
+            self.statusBar().showMessage("Остановлено · очередь прервана")
+            return
+
+        if success:
+            item.status = QUEUE_STATUS_DONE
+            item.progress = 100
+            item.finished_at = datetime.now()
+            self._append_log(
+                "info",
+                f"Очередь: видео {self.active_queue_index + 1}/{len(self.queue_items)} "
+                f"завершено успешно: {item.output_path}",
+            )
+            self._refresh_queue_ui()
+            QTimer.singleShot(0, self._start_next_queue_item)
+            return
+
+        item.status = QUEUE_STATUS_ERROR
+        item.error_message = "Процесс завершился с ошибкой"
+        item.finished_at = datetime.now()
+        self._finish_queue("Очередь остановлена из-за ошибки.")
+        self.statusBar().showMessage("Ошибка · очередь остановлена")
 
     def _handle_process_line(self, line: str) -> None:
         clean = ANSI_RE.sub("", line).strip()
@@ -1080,8 +1883,7 @@ class MainWindow(QMainWindow):
         overall_percent = 2 + round(frame_percent * 8 / 100)
         self._set_main_progress(
             overall_percent,
-            f"Этап: Извлечение кадров; Прогресс этапа: {frame_percent}%; "
-            f"Общий прогресс: {overall_percent}%",
+            f"Этап: Извлечение кадров; Прогресс этапа: {frame_percent}%",
         )
 
     def _set_main_progress(self, value: int, status: str) -> None:
@@ -1089,12 +1891,126 @@ class MainWindow(QMainWindow):
         if safe_value < self._last_progress_value:
             safe_value = self._last_progress_value
         self._last_progress_value = safe_value
-        self.progress.setValue(safe_value)
-        self.progress.setFormat(f"Общий прогресс: {safe_value}%")
-        display = status if "Общий прогресс:" in status else f"{status}: {safe_value}%"
-        self.progress_summary_label.setText(f"Общий прогресс: {safe_value}%")
-        self.progress_detail_label.setText(display)
-        self.statusBar().showMessage(display)
+        display_value = safe_value
+        if self.queue_active and self.active_queue_index is not None:
+            display_value = self._queue_overall_progress(safe_value)
+            active_item = self.queue_items[self.active_queue_index]
+            active_item.progress = safe_value
+            if active_item.status != QUEUE_STATUS_ERROR:
+                active_item.status = QUEUE_STATUS_RUNNING
+            headline, details = self._format_queue_progress_display(
+                display_value,
+                safe_value,
+                status,
+            )
+            self._refresh_queue_ui(running=True)
+        else:
+            headline, details = self._format_progress_display(display_value, status)
+
+        self.progress.setValue(display_value)
+        self.progress.setFormat(f"{display_value}%")
+        self.progress_status_label.setText(headline)
+        self.progress_detail_label.setText(details)
+        self.progress_detail_label.setVisible(bool(details))
+        self.statusBar().showMessage(headline)
+
+    def _queue_overall_progress(self, current_item_progress: int) -> int:
+        if not self.queue_items or self.active_queue_index is None:
+            return current_item_progress
+        completed_items = max(0, self.active_queue_index)
+        raw_value = (
+            (completed_items + current_item_progress / 100)
+            / max(1, len(self.queue_items))
+            * 100
+        )
+        return max(0, min(100, round(raw_value)))
+
+    def _format_queue_progress_display(
+        self,
+        overall_value: int,
+        current_value: int,
+        status: str,
+    ) -> tuple[str, str]:
+        total = len(self.queue_items)
+        current_number = (self.active_queue_index or 0) + 1
+        active_item = self.queue_items[self.active_queue_index or 0]
+        headline = (
+            f"Обработка очереди · {current_number} из {total} · "
+            f"текущий файл: {active_item.input_path.name}"
+        )
+
+        _, single_details = self._format_progress_display(current_value, status)
+        details = [
+            f"Общий прогресс: {overall_value}%",
+            f"Текущее видео: {current_value}%",
+        ]
+        for segment in single_details.split(" · "):
+            segment = segment.strip()
+            if not segment or segment.startswith("Общий прогресс"):
+                continue
+            if segment.startswith("Локально"):
+                continue
+            details.append(segment)
+        return headline, " · ".join(details)
+
+    def _format_progress_display(self, value: int, status: str) -> tuple[str, str]:
+        segments = [
+            segment.strip()
+            for segment in status.split(";")
+            if segment.strip() and not OVERALL_PROGRESS_RE.match(segment.strip())
+        ]
+        done_text = self._done_progress_text(value, segments, status)
+        if done_text is not None:
+            headline = "Готово" if not done_text else f"Готово · {done_text}"
+            return headline, ""
+
+        stage = ""
+        batches = ""
+        headline_fallback = ""
+        details = [f"Общий прогресс: {value}%"]
+        for segment in segments:
+            label, separator, text = segment.partition(":")
+            label = label.strip()
+            text = text.strip() if separator else segment
+
+            if label == "Этап" and text:
+                stage = text
+                details.append(f"Этап: {text}")
+            elif label == "Батчи" and text:
+                batches = text
+            elif label == "Окно" and text.lower().startswith("батчи "):
+                batches = text[6:].strip()
+            elif LOCAL_PROGRESS_RE.match(segment):
+                local = LOCAL_PROGRESS_RE.match(segment)
+                if local:
+                    details.append(f"Локально: {local.group(1).strip()}")
+            elif label == "Скорость" and text:
+                details.append(text)
+            elif label in {"Прошло", "Осталось", "Кадры", "Выходные кадры"} and text:
+                details.append(f"{label}: {text}")
+            elif segment:
+                headline_fallback = headline_fallback or segment
+                details.append(segment)
+
+        headline_parts = ["Обработка"]
+        if stage:
+            headline_parts.append(stage)
+        elif headline_fallback:
+            headline_parts.append(headline_fallback)
+        if batches:
+            headline_parts.append(f"батчи {batches}")
+        return " · ".join(headline_parts), " · ".join(details)
+
+    def _done_progress_text(
+        self, value: int, segments: list[str], raw_status: str
+    ) -> str | None:
+        for segment in segments:
+            match = DONE_PROGRESS_RE.match(segment)
+            if match:
+                return match.group(1).strip()
+        if value >= 100 and "заверш" in raw_status.lower():
+            return "видео обработано"
+        return None
 
     def toggle_logs_expanded(self, expanded: bool) -> None:
         if expanded:
@@ -1103,6 +2019,7 @@ class MainWindow(QMainWindow):
             self.primary_panel.hide()
             self.settings_area.hide()
             self.expand_logs_button.setText("Свернуть логи")
+            self.logs.setMaximumHeight(16777215)
             self.splitter.setSizes([0, 1])
             self.logs.setFocus()
         else:
@@ -1110,6 +2027,7 @@ class MainWindow(QMainWindow):
             self.primary_panel.show()
             self.settings_area.show()
             self.expand_logs_button.setText("Развернуть логи")
+            self.logs.setMaximumHeight(self.compact_log_height)
             if self.saved_splitter_sizes:
                 self.splitter.setSizes(self.saved_splitter_sizes)
 
@@ -1117,10 +2035,21 @@ class MainWindow(QMainWindow):
         self._append_log("critical", f"Ошибка процесса: {error.name}")
 
     def _set_running_state(self, running: bool) -> None:
-        self.start_button.setEnabled(not running)
+        self.start_button.setEnabled(
+            not running and not self.queue_active and bool(self.queue_items)
+        )
         self.check_button.setEnabled(not running and self.env_thread is None)
         self.stop_button.setEnabled(running)
-        self.statusBar().showMessage("Обработка выполняется" if running else "Готово")
+        self.output_dir_edit.setEnabled(not running and not self.queue_active)
+        self.output_dir_button.setEnabled(not running and not self.queue_active)
+        self.primary_preset_combo.setEnabled(not running and not self.queue_active)
+        self.primary_denoise.setEnabled(not running and not self.queue_active)
+        self.primary_interpolation.setEnabled(not running and not self.queue_active)
+        self._refresh_queue_ui()
+        if running:
+            self.statusBar().showMessage("Обработка · запуск")
+        elif self.progress.value() < 100:
+            self.statusBar().showMessage("Готово")
 
     def _detect_level(self, text: str) -> str:
         match = LOG_RECORD_LEVEL_RE.search(text)

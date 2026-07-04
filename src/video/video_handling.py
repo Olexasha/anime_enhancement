@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
+from queue import Empty
 
 import cv2
 
@@ -67,6 +68,8 @@ class VideoHandler:
         self.video_queue = multiprocessing.Queue()
         self.final_videos_same_name = 1
         self.short_video_processes: list[multiprocessing.Process] = []
+        self.short_video_results: list = []
+        self.expected_short_video_paths: dict[Path, float] = {}
         self.short_videos_requested = 0
         self.cleanup_summaries: list[CleanupSummary] = []
 
@@ -86,6 +89,8 @@ class VideoHandler:
     def build_short_video(self, frame_batches: list) -> None:
         self._wait_for_short_video_slot()
         logger.debug("Запуск асинхронного сбора короткого видео")
+        expected_path = self._expected_short_video_path(frame_batches)
+        self.expected_short_video_paths[expected_path] = time.time()
         process = multiprocessing.Process(
             target=build_short_video_sync,
             args=(frame_batches, self.fps, self.video_queue, self.keep_temp_files),
@@ -94,7 +99,17 @@ class VideoHandler:
         self.short_video_processes.append(process)
         self.short_videos_requested += 1
 
+    @staticmethod
+    def _expected_short_video_path(frame_batches: list) -> Path:
+        batch_range_start = frame_batches[0].split("_")[1]
+        batch_range_end = frame_batches[-1].split("_")[1]
+        return Path(BATCH_VIDEO_PATH) / (
+            f"short_{batch_range_start}-{batch_range_end}."
+            f"{INTERMEDIATE_VIDEO_CONTAINER}"
+        )
+
     def _wait_for_short_video_slot(self) -> None:
+        self._drain_short_video_queue()
         self._collect_finished_short_video_processes()
         while (
             self._active_short_video_processes_count() >= self.max_short_video_builders
@@ -107,7 +122,53 @@ class VideoHandler:
                 f"(лимит: {self.max_short_video_builders})"
             )
             oldest.join(timeout=5)
+            self._drain_short_video_queue()
             self._collect_finished_short_video_processes()
+
+    def _drain_short_video_queue(self) -> int:
+        drained = 0
+        while True:
+            try:
+                self.short_video_results.append(self.video_queue.get_nowait())
+                drained += 1
+            except Empty:
+                break
+        return drained
+
+    @staticmethod
+    def _short_video_result_path(queue_item) -> Path:
+        if isinstance(queue_item, tuple) and len(queue_item) == 2:
+            video_path = queue_item[0]
+        else:
+            video_path = queue_item
+        return Path(video_path)
+
+    def _recover_finished_short_videos_from_disk(self) -> int:
+        known_paths = {
+            self._short_video_result_path(queue_item).resolve()
+            for queue_item in self.short_video_results
+        }
+        recovered = 0
+        for expected_path, requested_at in self.expected_short_video_paths.items():
+            resolved = expected_path.resolve()
+            if resolved in known_paths or not expected_path.is_file():
+                continue
+            try:
+                modified_at = expected_path.stat().st_mtime
+            except OSError:
+                continue
+            if modified_at + 2 < requested_at:
+                continue
+            if not verify_video_readable(str(expected_path)):
+                continue
+            self.short_video_results.append(str(expected_path))
+            known_paths.add(resolved)
+            recovered += 1
+            logger.warning(
+                "Short-видео найдено на диске, но не было получено из "
+                f"multiprocessing queue: {expected_path}"
+            )
+        return recovered
 
     def _active_short_video_processes_count(self) -> int:
         return sum(1 for process in self.short_video_processes if process.is_alive())
@@ -131,19 +192,55 @@ class VideoHandler:
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> None:
         last_reported = -1
+        last_logged_wait_state: tuple[int, int] | None = None
+        last_logged_wait_at = 0.0
         while True:
+            self._drain_short_video_queue()
             self._collect_finished_short_video_processes()
-            ready_count = self.video_queue.qsize()
+            ready_count = len(self.short_video_results)
+            active_count = len(self.short_video_processes)
             if progress_callback is not None and ready_count != last_reported:
                 progress_callback(ready_count, total_short_videos)
                 last_reported = ready_count
             if ready_count >= total_short_videos and not self.short_video_processes:
                 return
-            logger.info(
-                f"Ожидание short-видео (требуется: {total_short_videos}, "
-                f"готово: {ready_count}, "
-                f"активно: {len(self.short_video_processes)})"
+            if not self.short_video_processes:
+                recovered = self._recover_finished_short_videos_from_disk()
+                if recovered:
+                    ready_count = len(self.short_video_results)
+                    if progress_callback is not None and ready_count != last_reported:
+                        progress_callback(ready_count, total_short_videos)
+                        last_reported = ready_count
+                    if ready_count >= total_short_videos:
+                        return
+                missing = max(0, total_short_videos - len(self.short_video_results))
+                expected = "\n".join(
+                    str(path)
+                    for path in self.expected_short_video_paths
+                    if not path.is_file()
+                )
+                raise VideoMergingError(
+                    f"Не получены результаты short-видео: не хватает {missing} "
+                    f"из {total_short_videos}, активных builder-процессов нет."
+                    + (
+                        f"\nОжидаемые отсутствующие файлы:\n{expected}"
+                        if expected
+                        else ""
+                    )
+                )
+            wait_state = (ready_count, active_count)
+            now = time.monotonic()
+            should_log_wait = (
+                wait_state != last_logged_wait_state or now - last_logged_wait_at >= 30
             )
+            if should_log_wait:
+                logger.info(
+                    f"Ожидание short-видео (требуется: {total_short_videos}, "
+                    f"готово: {ready_count}, "
+                    f"активно: {active_count})"
+                )
+                last_logged_wait_state = wait_state
+                last_logged_wait_at = now
             await asyncio.sleep(5)
 
     async def build_final_video(
@@ -161,8 +258,9 @@ class VideoHandler:
         )
 
         video_paths = []
-        for _ in range(self.video_queue.qsize()):
-            queue_item = self.video_queue.get()
+        queue_items = self.short_video_results[:total_short_videos]
+        self.short_video_results = self.short_video_results[total_short_videos:]
+        for queue_item in queue_items:
             cleanup_summary = None
             if isinstance(queue_item, tuple) and len(queue_item) == 2:
                 video_path, cleanup_summary = queue_item

@@ -720,6 +720,12 @@ async def process_batches(
 
 
 def _safe_short_video_queue_size(video: Any) -> int:
+    drain = getattr(video, "_drain_short_video_queue", None)
+    if callable(drain):
+        drain()
+    results = getattr(video, "short_video_results", None)
+    if results is not None:
+        return max(0, len(results))
     queue = getattr(video, "video_queue", None)
     qsize = getattr(queue, "qsize", None)
     if qsize is None:

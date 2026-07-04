@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from tests.conftest import configure_test_environment, reload_project_modules
 
 
@@ -430,3 +432,172 @@ def test_short_video_builder_is_throttled(monkeypatch, tmp_path):
     assert len(created) == 2
     assert created[0].join_calls >= 1
     assert video.short_videos_requested == 2
+
+
+def test_short_video_wait_drains_queue_before_join(monkeypatch, tmp_path):
+    configure_test_environment(monkeypatch, tmp_path)
+    video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.video.video_handling",
+    )[1]
+
+    class ReadyQueue:
+        def __init__(self):
+            self.items = ["short_1-1.mkv"]
+
+        def get_nowait(self):
+            if self.items:
+                return self.items.pop(0)
+            raise video_handling.Empty
+
+    class LingeringProcess:
+        pid = 12345
+
+        def __init__(self, queue):
+            self.queue = queue
+            self.exitcode = None
+            self.join_calls = 0
+
+        def is_alive(self):
+            return bool(self.queue.items)
+
+        def terminate(self):
+            raise AssertionError("builder process must not be terminated")
+
+        def join(self, timeout=None):
+            self.join_calls += 1
+            if not self.queue.items:
+                self.exitcode = 0
+
+    queue = ReadyQueue()
+    process = LingeringProcess(queue)
+    video = video_handling.VideoHandler(fps=24)
+    video.video_queue = queue
+    video.short_video_processes = [process]
+
+    asyncio.run(video._wait_for_short_video_results(1))
+
+    assert process.join_calls >= 1
+    assert video.short_video_processes == []
+    assert video.short_video_results == ["short_1-1.mkv"]
+
+
+def test_short_video_wait_recovers_finished_file_without_queue_item(
+    monkeypatch, tmp_path
+):
+    configure_test_environment(monkeypatch, tmp_path)
+    video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.video.video_handling",
+    )[1]
+    short_video = tmp_path / "data" / "video_batches" / "short_1-1.mkv"
+    short_video.parent.mkdir(parents=True, exist_ok=True)
+    short_video.write_bytes(b"video")
+    monkeypatch.setattr(video_handling, "verify_video_readable", lambda *_args: True)
+
+    class EmptyQueue:
+        def get_nowait(self):
+            raise video_handling.Empty
+
+    video = video_handling.VideoHandler(fps=24)
+    video.video_queue = EmptyQueue()
+    video.expected_short_video_paths[short_video] = 0
+
+    asyncio.run(video._wait_for_short_video_results(1))
+
+    assert video.short_video_results == [str(short_video)]
+
+
+def test_short_video_wait_fails_when_builder_finished_without_result(
+    monkeypatch, tmp_path
+):
+    configure_test_environment(monkeypatch, tmp_path)
+    video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.video.video_handling",
+    )[1]
+
+    class EmptyQueue:
+        def get_nowait(self):
+            raise video_handling.Empty
+
+    video = video_handling.VideoHandler(fps=24)
+    video.video_queue = EmptyQueue()
+    video.expected_short_video_paths[tmp_path / "missing_short.mkv"] = 0
+
+    with pytest.raises(video_handling.VideoMergingError, match="Не получены"):
+        asyncio.run(video._wait_for_short_video_results(1))
+
+
+def test_short_video_wait_logs_only_on_state_change(monkeypatch, tmp_path):
+    configure_test_environment(monkeypatch, tmp_path)
+    video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.video.video_handling",
+    )[1]
+    sleep_calls = 0
+
+    class DelayedQueue:
+        def __init__(self):
+            self.emitted_first = False
+            self.emitted_second = False
+
+        def get_nowait(self):
+            if sleep_calls >= 1 and not self.emitted_first:
+                self.emitted_first = True
+                return "short_1-1.mkv"
+            if sleep_calls >= 4 and not self.emitted_second:
+                self.emitted_second = True
+                return "short_2-2.mkv"
+            raise video_handling.Empty
+
+    class Process:
+        exitcode = None
+
+        def __init__(self, queue):
+            self.queue = queue
+
+        def is_alive(self):
+            return not self.queue.emitted_second
+
+        def join(self, timeout=None):
+            if self.queue.emitted_second:
+                self.exitcode = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+
+    queue = DelayedQueue()
+    logged = []
+    monkeypatch.setattr(video_handling.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(video_handling.time, "monotonic", lambda: sleep_calls * 5)
+    monkeypatch.setattr(video_handling.logger, "info", logged.append)
+
+    video = video_handling.VideoHandler(fps=24)
+    video.video_queue = queue
+    video.short_video_processes = [Process(queue)]
+
+    asyncio.run(video._wait_for_short_video_results(2))
+
+    wait_logs = [
+        message for message in logged if message.startswith("Ожидание short-видео")
+    ]
+    assert wait_logs == [
+        "Ожидание short-видео (требуется: 2, готово: 0, активно: 1)",
+        "Ожидание short-видео (требуется: 2, готово: 1, активно: 1)",
+    ]
+
+
+def test_safe_short_video_queue_size_uses_drained_results(monkeypatch, tmp_path):
+    configure_test_environment(monkeypatch, tmp_path)
+    main = reload_project_modules("main")[0]
+
+    class FakeVideo:
+        def __init__(self):
+            self.short_video_results = []
+
+        def _drain_short_video_queue(self):
+            self.short_video_results.append("short_1-1.mkv")
+
+    assert main._safe_short_video_queue_size(FakeVideo()) == 1
