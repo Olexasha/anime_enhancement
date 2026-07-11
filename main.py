@@ -588,6 +588,7 @@ async def process_batches(
         )
 
     while end_batch != end_batch_to_improve:
+        _check_short_video_builders(video)
         end_batch = min(start_batch + threads - 1, end_batch_to_improve)
         logger.info(f"Обработка батчей с {start_batch} по {end_batch}")
 
@@ -619,6 +620,7 @@ async def process_batches(
             logger.success(
                 f"Батчи {start_batch}-{end_batch} успешно обработаны денойзом"
             )
+            _check_short_video_builders(video)
         else:
             logger.info("Денойз отключен: исходные PNG-кадры идут напрямую в апскейл")
 
@@ -655,12 +657,14 @@ async def process_batches(
             )
         )
         logger.success(f"Батчи {start_batch}-{end_batch} успешно апскейлены")
+        _check_short_video_builders(video)
 
         if settings.ENABLE_INTERPOLATION:
             interpolate_threads = calculate_interpolation_workers(threads)
             batch_nums = list(range(start_batch, end_batch + 1))
 
             for i in range(0, len(batch_nums), interpolate_threads):
+                _check_short_video_builders(video)
                 batches = batch_nums[i : i + interpolate_threads]
                 logger.info(
                     f"Интерполяция батчей {batches} ({interpolate_threads} процессов)"
@@ -696,6 +700,7 @@ async def process_batches(
                         ),
                     )
                 )
+                _check_short_video_builders(video)
             logger.success(f"Батчи {start_batch}-{end_batch} успешно интерполированы")
         else:
             logger.info(
@@ -719,7 +724,18 @@ async def process_batches(
     return cleanup_summaries
 
 
+def _check_short_video_builders(video: Any) -> None:
+    check = getattr(video, "check_short_video_builders", None)
+    if callable(check):
+        check()
+
+
 def _safe_short_video_queue_size(video: Any) -> int:
+    check = getattr(video, "check_short_video_builders", None)
+    if callable(check):
+        check()
+        results = getattr(video, "short_video_results", None)
+        return max(0, len(results)) if results is not None else 0
     drain = getattr(video, "_drain_short_video_queue", None)
     if callable(drain):
         drain()

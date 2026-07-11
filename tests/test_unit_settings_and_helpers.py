@@ -39,6 +39,58 @@ def test_ffmpeg_fps_is_formatted_as_fraction(monkeypatch, tmp_path):
     assert video_handling.VideoHandler._format_ffmpeg_fps(24) == "24/1"
 
 
+def test_short_video_broken_pipe_reports_ffmpeg_stderr(monkeypatch, tmp_path):
+    configure_test_environment(monkeypatch, tmp_path)
+    video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.video.video_handling",
+    )[1]
+
+    class FakeFrame:
+        shape = (2, 2, 3)
+
+        def tobytes(self):
+            return b"\0" * 12
+
+    class BrokenStdin:
+        def write(self, _data):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def close(self):
+            pass
+
+    class FakeStderr:
+        def read(self):
+            return b"No space left on device"
+
+    class FakeProcess:
+        stdin = BrokenStdin()
+        stderr = FakeStderr()
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 1
+
+    monkeypatch.setattr(video_handling.cv2, "imread", lambda _path: FakeFrame())
+    monkeypatch.setattr(
+        video_handling.VideoHandler,
+        "_start_ffmpeg_raw_writer",
+        lambda **_kwargs: FakeProcess(),
+    )
+
+    with pytest.raises(
+        video_handling.VideoMergingError, match="No space left on device"
+    ):
+        video_handling.VideoHandler.generate_video_from_frames(
+            [str(tmp_path / "frame_00000001.png")],
+            "1",
+            "1",
+            24,
+        )
+
+
 def test_short_video_default_encoder_args_are_compact_h264(monkeypatch, tmp_path):
     configure_test_environment(monkeypatch, tmp_path)
     video_handling = reload_project_modules(
@@ -393,6 +445,91 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
     assert video.short_calls == [
         ["batch_1", "batch_2", "batch_3", "batch_4", "batch_5", "batch_6"]
     ]
+
+
+def test_process_batches_stops_after_short_builder_failure(monkeypatch, tmp_path):
+    configure_test_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("ENABLE_INTERPOLATION", "true")
+    monkeypatch.setenv("FRAMES_MULTIPLY_FACTOR", "3")
+    settings, improve, main, video_handling = reload_project_modules(
+        "src.config.settings",
+        "src.frames.improve",
+        "main",
+        "src.video.video_handling",
+    )
+    calls = []
+
+    class FakeVideo:
+        def __init__(self):
+            self.short_calls = []
+            self.fail_builder_check = False
+
+        def check_short_video_builders(self):
+            if self.fail_builder_check:
+                raise video_handling.VideoMergingError("short builder failed")
+
+        def build_short_video(self, batches):
+            self.short_calls.append(batches)
+
+    video = FakeVideo()
+
+    async def fake_improve_batches(
+        processing_type,
+        process_threads,
+        ai_threads,
+        ai_tool_path,
+        start_batch,
+        end_batch,
+        max_retries=3,
+        progress_callback=None,
+    ):
+        _ = process_threads, ai_threads, ai_tool_path, max_retries
+        calls.append((processing_type.value, start_batch, end_batch))
+        output_dir = {
+            improve.ProcessingType.UPSCALE: settings.UPSCALED_BATCHES_DIR,
+            improve.ProcessingType.INTERPOLATE: settings.INTERPOLATED_BATCHES_DIR,
+        }[processing_type]
+        for batch_num in range(start_batch, end_batch + 1):
+            batch_dir = Path(output_dir) / f"batch_{batch_num}"
+            batch_dir.mkdir(parents=True, exist_ok=True)
+            (batch_dir / "frame_00000001.png").write_bytes(b"frame")
+        if progress_callback:
+            progress_callback(100)
+        if processing_type == improve.ProcessingType.INTERPOLATE:
+            video.fail_builder_check = True
+
+    monkeypatch.setattr(improve, "improve_batches", fake_improve_batches)
+    monkeypatch.setattr(main, "emit_gui_progress", lambda *args, **kwargs: None)
+
+    with pytest.raises(video_handling.VideoMergingError, match="short builder failed"):
+        asyncio.run(
+            main.process_batches(
+                6,
+                "2:2:2",
+                video,
+                "waifu2x.exe",
+                "realesrgan.exe",
+                "rife.exe",
+                1,
+                6,
+                main.PipelineProgress(
+                    enable_denoise=False,
+                    enable_interpolation=True,
+                    video_total_frames=6 * settings.FRAMES_PER_BATCH,
+                    start_batch=1,
+                    end_batch=6,
+                    batch_size=settings.FRAMES_PER_BATCH,
+                    total_windows=1,
+                    frames_multiply_factor=settings.FRAMES_MULTIPLY_FACTOR,
+                ),
+            )
+        )
+
+    assert calls == [
+        ("upscale", 1, 6),
+        ("interpolate", 1, 2),
+    ]
+    assert video.short_calls == []
 
 
 def test_short_video_builder_is_throttled(monkeypatch, tmp_path):
