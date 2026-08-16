@@ -173,6 +173,7 @@ tools/
 **/__pycache__/
 .pytest_cache/
 .ruff_cache/
+profiles/last_run_profile.json
 
 # временные кадры, видео и результаты обработки; .gitkeep остаются в репозитории
 data/**/*.mp4
