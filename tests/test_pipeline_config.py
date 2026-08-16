@@ -16,6 +16,11 @@ def test_defaults_are_valid_without_input_requirement():
     assert config.INTERMEDIATE_VIDEO_PRESET == "medium"
     assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
     assert config.KEEP_TEMP_FILES is False
+    assert config.SCENE_CUT_GUARD_ENABLED is True
+    assert config.SCENE_CUT_DETECTION_METHOD == "auto"
+    assert config.SCENE_CUT_THRESHOLD == 0.42
+    assert config.SCENE_CUT_MIN_SCENE_FRAMES == 6
+    assert config.SCENE_CUT_DEBUG is False
 
 
 def test_json_profile_roundtrip(tmp_path: Path):
@@ -106,6 +111,14 @@ def test_validation_detects_directory_final_video(tmp_path: Path):
     errors = config.validate(require_input_exists=True)
 
     assert any("FINAL_VIDEO" in error for error in errors)
+
+
+def test_validation_rejects_unsupported_scene_cut_method():
+    config = PipelineConfig(SCENE_CUT_DETECTION_METHOD="ffmpeg")
+
+    errors = config.validate(require_input_exists=False)
+
+    assert any("SCENE_CUT_DETECTION_METHOD" in error for error in errors)
 
 
 def test_preset_fast_changes_resource_profile():

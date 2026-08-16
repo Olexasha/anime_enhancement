@@ -71,6 +71,11 @@ class PipelineConfig:
     ENABLE_UHD_MODE: bool = True
     ENABLE_SPATIAL_TTA_MODE: bool = False
     ENABLE_TEMPORAL_TTA_MODE: bool = False
+    SCENE_CUT_GUARD_ENABLED: bool = True
+    SCENE_CUT_DETECTION_METHOD: str = "auto"
+    SCENE_CUT_THRESHOLD: float = 0.42
+    SCENE_CUT_MIN_SCENE_FRAMES: int = 6
+    SCENE_CUT_DEBUG: bool = False
     KEEP_TEMP_FILES: bool = False
     LOG_LEVEL: str = "INFO"
 
@@ -212,6 +217,18 @@ class PipelineConfig:
                 )
         if self.FRAMES_MULTIPLY_FACTOR < 1:
             errors.append("FRAMES_MULTIPLY_FACTOR должен быть больше 0")
+        if self.SCENE_CUT_DETECTION_METHOD.lower() not in {
+            "auto",
+            "histogram",
+            "ssim",
+        }:
+            errors.append(
+                "SCENE_CUT_DETECTION_METHOD должен быть auto, histogram или ssim"
+            )
+        if not 0 <= self.SCENE_CUT_THRESHOLD <= 1:
+            errors.append("SCENE_CUT_THRESHOLD должен быть от 0 до 1")
+        if self.SCENE_CUT_MIN_SCENE_FRAMES < 1:
+            errors.append("SCENE_CUT_MIN_SCENE_FRAMES должен быть больше 0")
         return errors
 
 
@@ -335,6 +352,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "INTERMEDIATE_VIDEO_CONTAINER": "mkv",
         "ENABLE_UHD_MODE": True,
         "ENABLE_TEMPORAL_TTA_MODE": True,
+        "SCENE_CUT_GUARD_ENABLED": True,
     },
     "Быстрее": {
         "ENABLE_DENOISE": False,
@@ -342,6 +360,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "FRAMES_MULTIPLY_FACTOR": 2,
         "UPSCALE_FACTOR": 2,
         "ENABLE_UHD_MODE": False,
+        "SCENE_CUT_GUARD_ENABLED": True,
     },
     "Слабое железо": {
         "ENABLE_DENOISE": False,

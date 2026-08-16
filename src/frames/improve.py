@@ -1,5 +1,7 @@
 import asyncio
 import inspect
+import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -19,11 +21,18 @@ from src.config.settings import (
     FRAMES_MULTIPLY_FACTOR,
     INPUT_BATCHES_DIR,
     INTERPOLATED_BATCHES_DIR,
+    KEEP_TEMP_FILES,
     OUTPUT_IMAGE_FORMAT,
     REALESRGAN_MODEL_DIR,
     REALESRGAN_MODEL_NAME,
     RIFE_MODEL_DIR,
+    SCENE_CUT_DEBUG,
+    SCENE_CUT_DETECTION_METHOD,
+    SCENE_CUT_GUARD_ENABLED,
+    SCENE_CUT_MIN_SCENE_FRAMES,
+    SCENE_CUT_THRESHOLD,
     TIME_STEP,
+    TMP_VIDEO_PATH,
     UPSCALE_FACTOR,
     UPSCALED_BATCHES_DIR,
     WAIFU2X_MODEL_DIR,
@@ -31,7 +40,15 @@ from src.config.settings import (
 )
 from src.files.file_actions import create_dir
 from src.frames.frames_helpers import count_frames_in_certain_batches
+from src.frames.scene_cut_guard import (
+    SceneCutPlan,
+    build_scene_cut_plans,
+    build_scene_segments,
+    list_batch_frames,
+    write_scene_cut_debug,
+)
 from src.utils.logger import logger
+from src.video.video_helpers import sort_frame_paths
 
 MAX_RETRIES = 3  # макс количество попыток при неудаче на обработке фреймов
 RETRY_DELAY = 2  # задержка между попытками в сек
@@ -157,12 +174,236 @@ def _call_progress_callback(
         progress_callback(percent)
 
 
+def _rife_flags() -> list[str]:
+    flags = []
+    if ENABLE_UHD_MODE:
+        flags.append("-u")
+    if ENABLE_SPATIAL_TTA_MODE:
+        flags.append("-x")
+    if ENABLE_TEMPORAL_TTA_MODE:
+        flags.append("-z")
+    return flags
+
+
+def _build_rife_command(
+    *,
+    ai_tool_path: str,
+    ai_threads: str,
+    input_dir: Path,
+    output_dir: Path,
+    frame_count: int,
+) -> list[Any]:
+    config = PROCESSING_CONFIG[ProcessingType.INTERPOLATE]
+    command: list[Any] = [
+        ai_tool_path,
+        "-i",
+        str(input_dir),
+        "-o",
+        output_dir,
+        "-m",
+        config["model_dir"],
+        "-f",
+        OUTPUT_IMAGE_FORMAT,
+        "-j",
+        ai_threads,
+    ]
+    if FRAMES_MULTIPLY_FACTOR > 2:
+        command.extend(
+            (
+                "-n",
+                str(config["num_frame"] * frame_count),
+                "-s",
+                str(config["time_step"]),
+            )
+        )
+    command.extend(_rife_flags())
+    return command
+
+
+def _run_ai_command(
+    command: list[Any],
+    *,
+    config: dict[str, Any],
+    batch_num: int,
+    max_retries: int,
+    context: str = "",
+) -> None:
+    cmd_args = [str(arg) for arg in command]
+    logger.debug(" ".join(cmd_args))
+
+    context_suffix = f" ({context})" if context else ""
+    for attempt in range(max_retries):
+        try:
+            logger.debug(
+                f"Запуск {config['display_name'].lower()} батча {batch_num}{context_suffix} "
+                f"с параметрами. Попытка: {attempt + 1}/{max_retries}"
+            )
+            subprocess.run(command, capture_output=True, text=True, check=True)
+            return
+
+        except subprocess.CalledProcessError as error:
+            logger.error(
+                f"Ошибка в батче {batch_num}{context_suffix} "
+                f"(попытка {attempt + 1}): {error.stderr}"
+            )
+            if attempt < max_retries - 1:
+                time.sleep(RETRY_DELAY)
+            else:
+                raise RuntimeError(
+                    f"Не удалось обработать батч {batch_num} "
+                    f"на этапе {config['display_name']} после {max_retries} попыток"
+                ) from error
+
+        except Exception as error:
+            logger.error(
+                f"Неожиданная ошибка в батче {batch_num}{context_suffix}: {str(error)}"
+            )
+            raise
+
+
+def _link_or_copy_frame(source: str, target: Path) -> None:
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
+def _clear_top_level_frames(directory: Path) -> None:
+    for frame_path in directory.glob(f"*.{OUTPUT_IMAGE_FORMAT}"):
+        frame_path.unlink()
+
+
+def _copy_static_segment_frames(
+    frame_path: str,
+    output_dir: Path,
+    next_output_index: int,
+) -> int:
+    for _ in range(max(1, FRAMES_MULTIPLY_FACTOR)):
+        target = output_dir / f"frame_{next_output_index:08d}.{OUTPUT_IMAGE_FORMAT}"
+        shutil.copy2(frame_path, target)
+        next_output_index += 1
+    return next_output_index
+
+
+def _move_segment_outputs(
+    segment_output_dir: Path,
+    output_dir: Path,
+    next_output_index: int,
+) -> int:
+    generated_frames = sort_frame_paths(
+        [
+            str(path)
+            for path in segment_output_dir.iterdir()
+            if path.is_file()
+            and path.name.lower().endswith(f".{OUTPUT_IMAGE_FORMAT.lower()}")
+        ]
+    )
+    if not generated_frames:
+        raise RuntimeError(f"RIFE не создал кадры сегмента: {segment_output_dir}")
+
+    for generated_frame in generated_frames:
+        target = output_dir / f"frame_{next_output_index:08d}.{OUTPUT_IMAGE_FORMAT}"
+        shutil.move(generated_frame, target)
+        next_output_index += 1
+    return next_output_index
+
+
+def _improve_interpolation_batch_with_scene_cut_guard(
+    *,
+    ai_threads: str,
+    ai_tool_path: str,
+    batch_num: int,
+    input_dir: Path,
+    output_dir: Path,
+    scene_cut_plan: SceneCutPlan,
+    max_retries: int,
+) -> None:
+    config = PROCESSING_CONFIG[ProcessingType.INTERPOLATE]
+    frame_paths = list_batch_frames(
+        input_dir.parent,
+        batch_num,
+        OUTPUT_IMAGE_FORMAT,
+    )
+    segments = build_scene_segments(frame_paths, scene_cut_plan.cuts)
+    if not segments:
+        raise RuntimeError(f"Scene Cut Guard: нет кадров для batch_{batch_num}")
+
+    logger.info(
+        f"Scene Cut Guard: batch_{batch_num}: найдено cut={len(scene_cut_plan.cuts)}, "
+        f"scene-сегментов={len(segments)}"
+    )
+
+    temp_root = output_dir.parent / f"_scene_cut_guard_batch_{batch_num}"
+    if temp_root.exists():
+        shutil.rmtree(temp_root, ignore_errors=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+    _clear_top_level_frames(output_dir)
+
+    next_output_index = 1
+    try:
+        for segment_index, segment in enumerate(segments, start=1):
+            segment_frames = list(segment.frame_paths)
+            if len(segment_frames) == 1:
+                next_output_index = _copy_static_segment_frames(
+                    segment_frames[0],
+                    output_dir,
+                    next_output_index,
+                )
+                continue
+
+            segment_input_dir = temp_root / f"scene_{segment_index:06d}_input"
+            segment_output_dir = temp_root / f"scene_{segment_index:06d}_output"
+            segment_input_dir.mkdir(parents=True, exist_ok=True)
+            segment_output_dir.mkdir(parents=True, exist_ok=True)
+
+            for local_index, source_frame in enumerate(segment_frames, start=1):
+                target = (
+                    segment_input_dir / f"frame_{local_index:08d}.{OUTPUT_IMAGE_FORMAT}"
+                )
+                _link_or_copy_frame(source_frame, target)
+
+            command = _build_rife_command(
+                ai_tool_path=ai_tool_path,
+                ai_threads=ai_threads,
+                input_dir=segment_input_dir,
+                output_dir=segment_output_dir,
+                frame_count=len(segment_frames),
+            )
+            _run_ai_command(
+                command,
+                config=config,
+                batch_num=batch_num,
+                max_retries=max_retries,
+                context=(
+                    f"scene {segment_index}/{len(segments)} "
+                    f"{segment.start_frame}-{segment.end_frame}"
+                ),
+            )
+            next_output_index = _move_segment_outputs(
+                segment_output_dir,
+                output_dir,
+                next_output_index,
+            )
+
+        output_frames = next_output_index - 1
+        expected_frames = len(frame_paths) * max(1, FRAMES_MULTIPLY_FACTOR)
+        if output_frames != expected_frames:
+            raise RuntimeError(
+                f"Scene Cut Guard: batch_{batch_num} создал {output_frames} кадров, "
+                f"ожидалось {expected_frames}"
+            )
+    finally:
+        if not KEEP_TEMP_FILES:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def _improve_batch(
     processing_type: ProcessingType,
     ai_threads: str,
     ai_tool_path: str,
     batch_num: int,
     max_retries: int = MAX_RETRIES,
+    scene_cut_plan: SceneCutPlan | None = None,
 ) -> None:
     """
     Универсальный метод для обработки батча (апскейл или денойз)
@@ -211,69 +452,34 @@ def _improve_batch(
             ]
         )
     elif processing_type == ProcessingType.INTERPOLATE:
-        command.extend(
-            [
-                "-m",
-                config["model_dir"],
-                *common_args,
-            ]
-        )
-        if FRAMES_MULTIPLY_FACTOR > 2:
-            frames_in_batch = count_frames_in_certain_batches(
-                directory=UPSCALED_BATCHES_DIR, just_one_batch=batch_num
+        if scene_cut_plan is not None and scene_cut_plan.cuts:
+            _improve_interpolation_batch_with_scene_cut_guard(
+                ai_threads=ai_threads,
+                ai_tool_path=ai_tool_path,
+                batch_num=batch_num,
+                input_dir=input_dir,
+                output_dir=output_dir,
+                scene_cut_plan=scene_cut_plan,
+                max_retries=max_retries,
             )
-            command.extend(
-                (
-                    "-n",
-                    str(config["num_frame"] * frames_in_batch),
-                    "-s",
-                    str(config["time_step"]),
-                )
-            )
-
-        # Добавляем флаги только для интерполяции
-        flags = []
-        if ENABLE_UHD_MODE:
-            flags.append("-u")
-        if ENABLE_SPATIAL_TTA_MODE:
-            flags.append("-x")
-        if ENABLE_TEMPORAL_TTA_MODE:
-            flags.append("-z")
-
-        command.extend(flags)
-
-    cmd_args = [str(arg) for arg in command]
-    logger.debug(" ".join(cmd_args))
-
-    for attempt in range(max_retries):
-        try:
-            logger.debug(
-                f"Запуск {config['display_name'].lower()} батча {batch_num} с параметрами: {ai_threads}. "
-                f"Попытка: {attempt + 1}/{max_retries}"
-            )
-            result = subprocess.run(command, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"Ошибка в батче {batch_num}: {result.stderr}")
-                raise RuntimeError(
-                    f"Ошибка этапа {config['display_name']} в батче {batch_num}"
-                )
             return
+        frames_in_batch = count_frames_in_certain_batches(
+            directory=UPSCALED_BATCHES_DIR, just_one_batch=batch_num
+        )
+        command = _build_rife_command(
+            ai_tool_path=ai_tool_path,
+            ai_threads=ai_threads,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            frame_count=frames_in_batch,
+        )
 
-        except subprocess.CalledProcessError as error:
-            logger.error(
-                f"Ошибка в батче {batch_num} (попытка {attempt + 1}): {error.stderr}"
-            )
-            if attempt < max_retries - 1:
-                time.sleep(RETRY_DELAY)
-            else:
-                raise RuntimeError(
-                    f"Не удалось обработать батч {batch_num} "
-                    f"на этапе {config['display_name']} после {max_retries} попыток"
-                ) from error
-
-        except Exception as error:
-            logger.error(f"Неожиданная ошибка в батче {batch_num}: {str(error)}")
-            raise
+    _run_ai_command(
+        command,
+        config=config,
+        batch_num=batch_num,
+        max_retries=max_retries,
+    )
 
 
 async def monitor_progress(
@@ -408,11 +614,48 @@ async def improve_batches(
     batches_range = range(start_batch, end_batch + 1)
     source_frames = count_frames_in_certain_batches(config["input_dir"], batches_range)
     is_processing = [True]
+    scene_cut_plans: dict[int, SceneCutPlan] = {}
 
     if start_batch == end_batch:
         process_threads = 1
 
     if processing_type == ProcessingType.INTERPOLATE:
+        if SCENE_CUT_GUARD_ENABLED:
+            scan_result = build_scene_cut_plans(
+                input_root=config["input_dir"],
+                batch_numbers=batches_range,
+                image_format=OUTPUT_IMAGE_FORMAT,
+                method=SCENE_CUT_DETECTION_METHOD,
+                threshold=SCENE_CUT_THRESHOLD,
+                min_scene_frames=SCENE_CUT_MIN_SCENE_FRAMES,
+            )
+            scene_cut_plans = scan_result.plans_by_batch
+            method_note = (
+                f" (requested: {scan_result.requested_method})"
+                if scan_result.requested_method != scan_result.method
+                else ""
+            )
+            logger.info(
+                "Scene Cut Guard включен: "
+                f"method={scan_result.method}{method_note}, "
+                f"threshold={SCENE_CUT_THRESHOLD}, "
+                f"min_scene_frames={SCENE_CUT_MIN_SCENE_FRAMES}, "
+                f"батчи {start_batch}-{end_batch}, "
+                f"найдено cuts={len(scan_result.cuts)}"
+            )
+            if SCENE_CUT_DEBUG:
+                report_path = write_scene_cut_debug(
+                    report_path=Path(TMP_VIDEO_PATH) / "scene_cuts.json",
+                    enabled=True,
+                    requested_method=scan_result.requested_method,
+                    method=scan_result.method,
+                    threshold=SCENE_CUT_THRESHOLD,
+                    min_scene_frames=SCENE_CUT_MIN_SCENE_FRAMES,
+                    cuts=scan_result.cuts,
+                )
+                logger.info(f"Scene Cut Guard debug сохранен: {report_path}")
+        else:
+            logger.info("Scene Cut Guard отключен")
         output_frames = source_frames * FRAMES_MULTIPLY_FACTOR
         logger.info(
             f"Начало {config['start_name']} батчей {start_batch}-{end_batch}: "
@@ -448,6 +691,7 @@ async def improve_batches(
                     ai_tool_path,
                     batch_num,
                     max_retries,
+                    scene_cut_plans.get(batch_num),
                 )
                 for batch_num in batches_range
             ]

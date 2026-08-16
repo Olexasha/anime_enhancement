@@ -23,6 +23,11 @@
     "ENABLE_UHD_MODE": true,
     "ENABLE_SPATIAL_TTA_MODE": false,
     "ENABLE_TEMPORAL_TTA_MODE": true,
+    "SCENE_CUT_GUARD_ENABLED": true,
+    "SCENE_CUT_DETECTION_METHOD": "auto",
+    "SCENE_CUT_THRESHOLD": 0.42,
+    "SCENE_CUT_MIN_SCENE_FRAMES": 6,
+    "SCENE_CUT_DEBUG": false,
     "KEEP_TEMP_FILES": false,
     "LOG_LEVEL": "INFO"
   }

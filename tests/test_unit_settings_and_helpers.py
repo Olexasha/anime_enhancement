@@ -24,6 +24,10 @@ def test_recommended_settings_defaults(monkeypatch, tmp_path):
     assert settings.INTERMEDIATE_VIDEO_CRF == 12
     assert settings.INTERMEDIATE_VIDEO_PRESET == "medium"
     assert settings.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
+    assert settings.SCENE_CUT_GUARD_ENABLED is True
+    assert settings.SCENE_CUT_DETECTION_METHOD == "auto"
+    assert settings.SCENE_CUT_THRESHOLD == 0.42
+    assert settings.SCENE_CUT_MIN_SCENE_FRAMES == 6
 
 
 def test_ffmpeg_fps_is_formatted_as_fraction(monkeypatch, tmp_path):

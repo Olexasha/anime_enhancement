@@ -16,8 +16,16 @@ def test_gui_import_and_window_smoke():
     assert window.windowTitle() == "Anime Enhancement"
     assert "ORIGINAL_VIDEO" not in DETAIL_FIELDS
     assert "FINAL_VIDEO" not in DETAIL_FIELDS
+    assert not {
+        "SCENE_CUT_GUARD_ENABLED",
+        "SCENE_CUT_DETECTION_METHOD",
+        "SCENE_CUT_THRESHOLD",
+        "SCENE_CUT_MIN_SCENE_FRAMES",
+        "SCENE_CUT_DEBUG",
+    }.intersection(DETAIL_FIELDS)
     assert "ORIGINAL_VIDEO" not in window.detail_widgets
     assert "FINAL_VIDEO" not in window.detail_widgets
+    assert not hasattr(window, "simple_scene_cut_guard")
     assert (
         window.detail_labels["INTERMEDIATE_VIDEO_PIX_FMT"].text()
         == "Формат пикселей short-видео"
