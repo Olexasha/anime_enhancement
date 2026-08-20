@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import cv2
+
 from src.config.settings import (
     DENOISE_FACTOR,
     DENOISED_BATCHES_DIR,
@@ -31,6 +33,8 @@ from src.config.settings import (
     SCENE_CUT_GUARD_ENABLED,
     SCENE_CUT_MIN_SCENE_FRAMES,
     SCENE_CUT_THRESHOLD,
+    STATIC_SCENE_GUARD_ENABLED,
+    STATIC_SCENE_MIN_DURATION_SECONDS,
     TIME_STEP,
     TMP_VIDEO_PATH,
     UPSCALE_FACTOR,
@@ -41,9 +45,15 @@ from src.config.settings import (
 from src.files.file_actions import create_dir
 from src.frames.frames_helpers import count_frames_in_certain_batches
 from src.frames.scene_cut_guard import (
+    GuardSegment,
     SceneCutPlan,
+    SceneCutScanResult,
+    StaticSceneRun,
+    build_guard_segments,
     build_scene_cut_plans,
     build_scene_segments,
+    build_static_frame_map,
+    calculate_static_scene_min_run_frames,
     list_batch_frames,
     write_scene_cut_debug,
 )
@@ -52,6 +62,7 @@ from src.video.video_helpers import sort_frame_paths
 
 MAX_RETRIES = 3  # макс количество попыток при неудаче на обработке фреймов
 RETRY_DELAY = 2  # задержка между попытками в сек
+STATIC_RIFE_MIN_SAVED_MEGAPIXEL_FRAMES_PER_EXTRA_PROCESS = 12.0
 
 
 class ProcessingType(Enum):
@@ -60,6 +71,16 @@ class ProcessingType(Enum):
     UPSCALE = "upscale"
     DENOISE = "denoise"
     INTERPOLATE = "interpolate"
+
+
+@dataclass(frozen=True, slots=True)
+class BatchImproveStats:
+    source_frames: int
+    ai_input_frames: int
+    static_frames_skipped: int = 0
+    interpolation_segments: int = 0
+    rife_calls: int = 0
+    optimization_bypassed: bool = False
 
 
 # Конфигурация для каждого типа обработки
@@ -261,11 +282,17 @@ def _run_ai_command(
             raise
 
 
-def _link_or_copy_frame(source: str, target: Path) -> None:
+def _link_or_copy_frame(source: str | Path, target: Path) -> None:
     try:
         os.link(source, target)
     except OSError:
         shutil.copy2(source, target)
+
+
+def _replace_with_link_or_copy(source: str | Path, target: Path) -> None:
+    if target.exists():
+        target.unlink()
+    _link_or_copy_frame(source, target)
 
 
 def _clear_top_level_frames(directory: Path) -> None:
@@ -273,14 +300,16 @@ def _clear_top_level_frames(directory: Path) -> None:
         frame_path.unlink()
 
 
-def _copy_static_segment_frames(
+def _materialize_static_frames(
     frame_path: str,
+    source_frame_count: int,
     output_dir: Path,
     next_output_index: int,
 ) -> int:
-    for _ in range(max(1, FRAMES_MULTIPLY_FACTOR)):
+    output_count = source_frame_count * max(1, FRAMES_MULTIPLY_FACTOR)
+    for _ in range(output_count):
         target = output_dir / f"frame_{next_output_index:08d}.{OUTPUT_IMAGE_FORMAT}"
-        shutil.copy2(frame_path, target)
+        _replace_with_link_or_copy(frame_path, target)
         next_output_index += 1
     return next_output_index
 
@@ -308,6 +337,98 @@ def _move_segment_outputs(
     return next_output_index
 
 
+def _prepare_static_stage_input(
+    *,
+    input_dir: Path,
+    temp_input_dir: Path,
+    batch_num: int,
+    static_runs: tuple[StaticSceneRun, ...],
+) -> tuple[Path, dict[str, str]]:
+    frame_paths = list_batch_frames(
+        input_dir.parent,
+        batch_num,
+        OUTPUT_IMAGE_FORMAT,
+    )
+    duplicate_map = build_static_frame_map(frame_paths, static_runs)
+    if not duplicate_map:
+        return input_dir, {}
+
+    if temp_input_dir.exists():
+        shutil.rmtree(temp_input_dir, ignore_errors=True)
+    temp_input_dir.mkdir(parents=True, exist_ok=True)
+    for frame_path in frame_paths:
+        if frame_path in duplicate_map:
+            continue
+        _link_or_copy_frame(frame_path, temp_input_dir / Path(frame_path).name)
+    return temp_input_dir, duplicate_map
+
+
+def _materialize_static_stage_outputs(
+    *,
+    output_dir: Path,
+    duplicate_map: dict[str, str],
+) -> None:
+    # Этот каталог дальше только читается; следующая стадия пишет результат отдельно.
+    for duplicate_path, representative_path in duplicate_map.items():
+        representative_output = output_dir / Path(representative_path).name
+        if not representative_output.is_file():
+            raise RuntimeError(
+                "Static Scene Guard: AI-утилита не создала кадр-представитель "
+                f"{representative_output}"
+            )
+        duplicate_output = output_dir / Path(duplicate_path).name
+        _replace_with_link_or_copy(representative_output, duplicate_output)
+
+
+def _build_profitable_interpolation_segments(
+    frame_paths: list[str],
+    scene_cut_plan: SceneCutPlan,
+) -> tuple[list[GuardSegment], bool]:
+    guarded_segments = build_guard_segments(
+        frame_paths,
+        scene_cut_plan.cuts,
+        scene_cut_plan.static_runs,
+    )
+    if not scene_cut_plan.static_runs:
+        return guarded_segments, False
+
+    baseline_segments = build_scene_segments(frame_paths, scene_cut_plan.cuts)
+    baseline_rife_calls = sum(
+        len(segment.frame_paths) > 1 for segment in baseline_segments
+    )
+    guarded_rife_calls = sum(
+        not segment.is_static and len(segment.frame_paths) > 1
+        for segment in guarded_segments
+    )
+    extra_rife_calls = max(0, guarded_rife_calls - baseline_rife_calls)
+    if extra_rife_calls == 0:
+        return guarded_segments, False
+
+    static_frames = sum(
+        len(segment.frame_paths) for segment in guarded_segments if segment.is_static
+    )
+    first_frame = cv2.imread(frame_paths[0], cv2.IMREAD_GRAYSCALE)
+    if first_frame is None:
+        logger.warning(
+            "Static Scene Guard: не удалось оценить разрешение; "
+            "RIFE-оптимизация статичных серий пропущена"
+        )
+        return build_guard_segments(frame_paths, scene_cut_plan.cuts, ()), True
+
+    saved_megapixel_frames = static_frames * first_frame.size / 1_000_000
+    required_savings = (
+        extra_rife_calls * STATIC_RIFE_MIN_SAVED_MEGAPIXEL_FRAMES_PER_EXTRA_PROCESS
+    )
+    if saved_megapixel_frames < required_savings:
+        logger.debug(
+            "Static Scene Guard: RIFE-оптимизация не окупит дополнительные "
+            f"запуски модели ({saved_megapixel_frames:.1f} < "
+            f"{required_savings:.1f} MP-кадров)"
+        )
+        return build_guard_segments(frame_paths, scene_cut_plan.cuts, ()), True
+    return guarded_segments, False
+
+
 def _improve_interpolation_batch_with_scene_cut_guard(
     *,
     ai_threads: str,
@@ -317,20 +438,35 @@ def _improve_interpolation_batch_with_scene_cut_guard(
     output_dir: Path,
     scene_cut_plan: SceneCutPlan,
     max_retries: int,
-) -> None:
+) -> BatchImproveStats:
     config = PROCESSING_CONFIG[ProcessingType.INTERPOLATE]
     frame_paths = list_batch_frames(
         input_dir.parent,
         batch_num,
         OUTPUT_IMAGE_FORMAT,
     )
-    segments = build_scene_segments(frame_paths, scene_cut_plan.cuts)
+    segments, optimization_bypassed = _build_profitable_interpolation_segments(
+        frame_paths,
+        scene_cut_plan,
+    )
     if not segments:
         raise RuntimeError(f"Scene Cut Guard: нет кадров для batch_{batch_num}")
 
-    logger.info(
-        f"Scene Cut Guard: batch_{batch_num}: найдено cut={len(scene_cut_plan.cuts)}, "
-        f"scene-сегментов={len(segments)}"
+    static_frames_skipped = sum(
+        len(segment.frame_paths) for segment in segments if segment.is_static
+    )
+    rife_calls = sum(
+        not segment.is_static and len(segment.frame_paths) > 1 for segment in segments
+    )
+    ai_input_frames = sum(
+        len(segment.frame_paths)
+        for segment in segments
+        if not segment.is_static and len(segment.frame_paths) > 1
+    )
+    logger.debug(
+        f"Frame Guard: batch_{batch_num}: cut={len(scene_cut_plan.cuts)}, "
+        f"static-сегментов={sum(segment.is_static for segment in segments)}, "
+        f"всего сегментов={len(segments)}"
     )
 
     temp_root = output_dir.parent / f"_scene_cut_guard_batch_{batch_num}"
@@ -343,9 +479,10 @@ def _improve_interpolation_batch_with_scene_cut_guard(
     try:
         for segment_index, segment in enumerate(segments, start=1):
             segment_frames = list(segment.frame_paths)
-            if len(segment_frames) == 1:
-                next_output_index = _copy_static_segment_frames(
+            if segment.is_static or len(segment_frames) == 1:
+                next_output_index = _materialize_static_frames(
                     segment_frames[0],
+                    len(segment_frames),
                     output_dir,
                     next_output_index,
                 )
@@ -392,6 +529,14 @@ def _improve_interpolation_batch_with_scene_cut_guard(
                 f"Scene Cut Guard: batch_{batch_num} создал {output_frames} кадров, "
                 f"ожидалось {expected_frames}"
             )
+        return BatchImproveStats(
+            source_frames=len(frame_paths),
+            ai_input_frames=ai_input_frames,
+            static_frames_skipped=static_frames_skipped,
+            interpolation_segments=len(segments),
+            rife_calls=rife_calls,
+            optimization_bypassed=optimization_bypassed,
+        )
     finally:
         if not KEEP_TEMP_FILES:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -404,7 +549,7 @@ def _improve_batch(
     batch_num: int,
     max_retries: int = MAX_RETRIES,
     scene_cut_plan: SceneCutPlan | None = None,
-) -> None:
+) -> BatchImproveStats:
     """
     Универсальный метод для обработки батча (апскейл или денойз)
     :param processing_type: Тип обработки (UPSCALE или DENOISE)
@@ -416,13 +561,47 @@ def _improve_batch(
     config = PROCESSING_CONFIG[processing_type]
     input_dir = Path(config["input_dir"]) / f"batch_{batch_num}"
     output_dir = create_dir(config["output_dir"], f"batch_{batch_num}")
+    source_frame_count = count_frames_in_certain_batches(
+        input_dir.parent,
+        just_one_batch=batch_num,
+    )
 
     if not Path(ai_tool_path).exists():
         logger.error(f"ИИ утилита не найдена: {ai_tool_path}")
         raise FileNotFoundError(ai_tool_path)
 
+    effective_input_dir = input_dir
+    duplicate_map: dict[str, str] = {}
+    static_temp_input_dir: Path | None = None
+    static_expected_frame_count = 0
+    if (
+        processing_type in {ProcessingType.DENOISE, ProcessingType.UPSCALE}
+        and scene_cut_plan is not None
+        and scene_cut_plan.static_runs
+    ):
+        static_temp_input_dir = (
+            output_dir.parent
+            / f"_static_scene_guard_{processing_type.value}_batch_{batch_num}"
+        )
+        effective_input_dir, duplicate_map = _prepare_static_stage_input(
+            input_dir=input_dir,
+            temp_input_dir=static_temp_input_dir,
+            batch_num=batch_num,
+            static_runs=scene_cut_plan.static_runs,
+        )
+        if duplicate_map:
+            static_expected_frame_count = count_frames_in_certain_batches(
+                input_dir.parent,
+                just_one_batch=batch_num,
+            )
+            _clear_top_level_frames(output_dir)
+            logger.debug(
+                f"Static Scene Guard: {processing_type.value} batch_{batch_num}: "
+                f"AI обрабатывает на {len(duplicate_map)} кадров меньше"
+            )
+
     # Формируем команду в зависимости от типа обработки
-    command = [ai_tool_path, "-i", str(input_dir), "-o", output_dir]
+    command = [ai_tool_path, "-i", str(effective_input_dir), "-o", output_dir]
     # Общие параметры для всех типов обработки
     common_args = ("-f", OUTPUT_IMAGE_FORMAT, "-j", ai_threads)
 
@@ -452,8 +631,10 @@ def _improve_batch(
             ]
         )
     elif processing_type == ProcessingType.INTERPOLATE:
-        if scene_cut_plan is not None and scene_cut_plan.cuts:
-            _improve_interpolation_batch_with_scene_cut_guard(
+        if scene_cut_plan is not None and (
+            scene_cut_plan.cuts or scene_cut_plan.static_runs
+        ):
+            return _improve_interpolation_batch_with_scene_cut_guard(
                 ai_threads=ai_threads,
                 ai_tool_path=ai_tool_path,
                 batch_num=batch_num,
@@ -462,23 +643,53 @@ def _improve_batch(
                 scene_cut_plan=scene_cut_plan,
                 max_retries=max_retries,
             )
-            return
         frames_in_batch = count_frames_in_certain_batches(
             directory=UPSCALED_BATCHES_DIR, just_one_batch=batch_num
         )
         command = _build_rife_command(
             ai_tool_path=ai_tool_path,
             ai_threads=ai_threads,
-            input_dir=input_dir,
+            input_dir=effective_input_dir,
             output_dir=output_dir,
             frame_count=frames_in_batch,
         )
 
-    _run_ai_command(
-        command,
-        config=config,
-        batch_num=batch_num,
-        max_retries=max_retries,
+    try:
+        _run_ai_command(
+            command,
+            config=config,
+            batch_num=batch_num,
+            max_retries=max_retries,
+        )
+        if duplicate_map:
+            _materialize_static_stage_outputs(
+                output_dir=output_dir,
+                duplicate_map=duplicate_map,
+            )
+            actual_output_count = len(list(output_dir.glob(f"*.{OUTPUT_IMAGE_FORMAT}")))
+            if actual_output_count != static_expected_frame_count:
+                raise RuntimeError(
+                    f"Static Scene Guard: batch_{batch_num} создал "
+                    f"{actual_output_count} кадров, ожидалось "
+                    f"{static_expected_frame_count}"
+                )
+    finally:
+        if static_temp_input_dir is not None and not KEEP_TEMP_FILES:
+            shutil.rmtree(static_temp_input_dir, ignore_errors=True)
+    return BatchImproveStats(
+        source_frames=source_frame_count,
+        ai_input_frames=source_frame_count - len(duplicate_map),
+        static_frames_skipped=len(duplicate_map),
+        interpolation_segments=(
+            1
+            if processing_type == ProcessingType.INTERPOLATE and source_frame_count
+            else 0
+        ),
+        rife_calls=(
+            1
+            if processing_type == ProcessingType.INTERPOLATE and source_frame_count
+            else 0
+        ),
     )
 
 
@@ -590,6 +801,70 @@ async def monitor_progress(
     )
 
 
+def _select_frame_guard_scan(
+    scan_result: SceneCutScanResult,
+    batch_numbers: range,
+) -> SceneCutScanResult:
+    selected_numbers = tuple(batch_numbers)
+    missing = [
+        batch_num
+        for batch_num in selected_numbers
+        if batch_num not in scan_result.plans_by_batch
+    ]
+    if missing:
+        raise ValueError(
+            "Frame Guard plan не содержит батчи: "
+            + ", ".join(str(batch_num) for batch_num in missing)
+        )
+    plans = {
+        batch_num: scan_result.plans_by_batch[batch_num]
+        for batch_num in selected_numbers
+    }
+    cuts = {
+        (cut.from_frame, cut.to_frame): cut
+        for plan in plans.values()
+        for cut in plan.cuts
+    }
+    static_runs = {
+        (run.start_frame, run.end_frame): run
+        for plan in plans.values()
+        for run in plan.static_runs
+    }
+    return SceneCutScanResult(
+        plans_by_batch=plans,
+        cuts=tuple(cuts[key] for key in sorted(cuts)),
+        static_runs=tuple(static_runs[key] for key in sorted(static_runs)),
+        requested_method=scan_result.requested_method,
+        method=scan_result.method,
+    )
+
+
+def _log_static_guard_stage_summary(
+    *,
+    processing_type: ProcessingType,
+    source_frames: int,
+    static_runs: tuple[StaticSceneRun, ...],
+    batch_stats: list[BatchImproveStats],
+) -> None:
+    static_frames = sum(run.frame_count for run in static_runs)
+    static_percent = static_frames * 100 / max(1, source_frames)
+    skipped_frames = sum(stats.static_frames_skipped for stats in batch_stats)
+    ai_input_frames = sum(stats.ai_input_frames for stats in batch_stats)
+    details = (
+        f"static runs={len(static_runs)}, "
+        f"static frames={static_frames}/{source_frames} ({static_percent:.1f}%), "
+        f"AI input={ai_input_frames}, skipped={skipped_frames}"
+    )
+    if processing_type == ProcessingType.INTERPOLATE:
+        details += (
+            f", segments={sum(stats.interpolation_segments for stats in batch_stats)}, "
+            f"RIFE calls={sum(stats.rife_calls for stats in batch_stats)}, "
+            "unprofitable bypasses="
+            f"{sum(stats.optimization_bypassed for stats in batch_stats)}"
+        )
+    logger.info(f"Static Scene Guard [{processing_type.value}]: {details}")
+
+
 async def improve_batches(
     processing_type: ProcessingType,
     process_threads: int,
@@ -599,6 +874,8 @@ async def improve_batches(
     end_batch: int,
     max_retries: int = MAX_RETRIES,
     progress_callback: Callable[..., None] | None = None,
+    frame_guard_scan: SceneCutScanResult | None = None,
+    source_fps: float | None = None,
 ) -> None:
     """
     Универсальная функция для асинхронной обработки диапазона батчей
@@ -614,13 +891,18 @@ async def improve_batches(
     batches_range = range(start_batch, end_batch + 1)
     source_frames = count_frames_in_certain_batches(config["input_dir"], batches_range)
     is_processing = [True]
-    scene_cut_plans: dict[int, SceneCutPlan] = {}
+    frame_guard_plans: dict[int, SceneCutPlan] = {}
 
     if start_batch == end_batch:
         process_threads = 1
 
-    if processing_type == ProcessingType.INTERPOLATE:
-        if SCENE_CUT_GUARD_ENABLED:
+    scan_result: SceneCutScanResult | None = None
+    should_scan = STATIC_SCENE_GUARD_ENABLED or (
+        processing_type == ProcessingType.INTERPOLATE and SCENE_CUT_GUARD_ENABLED
+    )
+    if should_scan:
+        if frame_guard_scan is None:
+            analysis_started = time.perf_counter()
             scan_result = build_scene_cut_plans(
                 input_root=config["input_dir"],
                 batch_numbers=batches_range,
@@ -628,8 +910,32 @@ async def improve_batches(
                 method=SCENE_CUT_DETECTION_METHOD,
                 threshold=SCENE_CUT_THRESHOLD,
                 min_scene_frames=SCENE_CUT_MIN_SCENE_FRAMES,
+                static_min_run_frames=calculate_static_scene_min_run_frames(
+                    source_fps,
+                    STATIC_SCENE_MIN_DURATION_SECONDS,
+                ),
             )
-            scene_cut_plans = scan_result.plans_by_batch
+            logger.info(
+                "Frame Guard analysis: "
+                f"кадров={source_frames}, cuts={len(scan_result.cuts)}, "
+                f"static runs={len(scan_result.static_runs)}, "
+                f"время={time.perf_counter() - analysis_started:.3f} с"
+            )
+        else:
+            scan_result = _select_frame_guard_scan(frame_guard_scan, batches_range)
+        for batch_num, plan in scan_result.plans_by_batch.items():
+            frame_guard_plans[batch_num] = SceneCutPlan(
+                cuts=(
+                    plan.cuts
+                    if processing_type == ProcessingType.INTERPOLATE
+                    and SCENE_CUT_GUARD_ENABLED
+                    else ()
+                ),
+                static_runs=(plan.static_runs if STATIC_SCENE_GUARD_ENABLED else ()),
+            )
+
+    if processing_type == ProcessingType.INTERPOLATE:
+        if SCENE_CUT_GUARD_ENABLED and scan_result is not None:
             method_note = (
                 f" (requested: {scan_result.requested_method})"
                 if scan_result.requested_method != scan_result.method
@@ -652,6 +958,9 @@ async def improve_batches(
                     threshold=SCENE_CUT_THRESHOLD,
                     min_scene_frames=SCENE_CUT_MIN_SCENE_FRAMES,
                     cuts=scan_result.cuts,
+                    static_runs=(
+                        scan_result.static_runs if STATIC_SCENE_GUARD_ENABLED else ()
+                    ),
                 )
                 logger.info(f"Scene Cut Guard debug сохранен: {report_path}")
         else:
@@ -691,14 +1000,22 @@ async def improve_batches(
                     ai_tool_path,
                     batch_num,
                     max_retries,
-                    scene_cut_plans.get(batch_num),
+                    frame_guard_plans.get(batch_num),
                 )
                 for batch_num in batches_range
             ]
-            await asyncio.gather(*tasks)
+            batch_stats = await asyncio.gather(*tasks)
     except Exception as error:
         logger.error(f"Ошибка при {config['error_name']} батчей: {str(error)}")
         raise
     finally:
         is_processing[0] = False  # завершаем мониторинг прогресса
         await monitor_task  # ожидаем завершения задачи мониторинга
+
+    if STATIC_SCENE_GUARD_ENABLED and scan_result is not None:
+        _log_static_guard_stage_summary(
+            processing_type=processing_type,
+            source_frames=source_frames,
+            static_runs=scan_result.static_runs,
+            batch_stats=batch_stats,
+        )

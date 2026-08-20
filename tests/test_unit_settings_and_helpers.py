@@ -25,6 +25,8 @@ def test_recommended_settings_defaults(monkeypatch, tmp_path):
     assert settings.INTERMEDIATE_VIDEO_PRESET == "medium"
     assert settings.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
     assert settings.SCENE_CUT_GUARD_ENABLED is True
+    assert settings.STATIC_SCENE_GUARD_ENABLED is True
+    assert settings.STATIC_SCENE_MIN_DURATION_SECONDS == 0.5
     assert settings.SCENE_CUT_DETECTION_METHOD == "auto"
     assert settings.SCENE_CUT_THRESHOLD == 0.42
     assert settings.SCENE_CUT_MIN_SCENE_FRAMES == 6
@@ -364,12 +366,29 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
     configure_test_environment(monkeypatch, tmp_path)
     monkeypatch.setenv("ENABLE_INTERPOLATION", "true")
     monkeypatch.setenv("FRAMES_MULTIPLY_FACTOR", "3")
-    settings, improve, main = reload_project_modules(
+    settings, improve, scene_cut_guard, main = reload_project_modules(
         "src.config.settings",
         "src.frames.improve",
+        "src.frames.scene_cut_guard",
         "main",
     )
     calls = []
+    received_guard_scans = []
+    analysis_calls = []
+
+    def fake_build_scene_cut_plans(**kwargs):
+        analysis_calls.append(kwargs)
+        batch_numbers = tuple(kwargs["batch_numbers"])
+        return scene_cut_guard.SceneCutScanResult(
+            plans_by_batch={
+                batch_num: scene_cut_guard.SceneCutPlan(cuts=())
+                for batch_num in batch_numbers
+            },
+            cuts=(),
+            static_runs=(),
+            requested_method="auto",
+            method="histogram",
+        )
 
     for batch_num in range(1, 7):
         batch_dir = Path(settings.INPUT_BATCHES_DIR) / f"batch_{batch_num}"
@@ -385,8 +404,17 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
         end_batch,
         max_retries=3,
         progress_callback=None,
+        frame_guard_scan=None,
+        source_fps=None,
     ):
-        _ = ai_threads, ai_tool_path, max_retries
+        _ = (
+            ai_threads,
+            ai_tool_path,
+            max_retries,
+            frame_guard_scan,
+            source_fps,
+        )
+        received_guard_scans.append(frame_guard_scan)
         calls.append(
             (
                 processing_type.value,
@@ -415,6 +443,11 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
 
     video = FakeVideo()
     monkeypatch.setattr(improve, "improve_batches", fake_improve_batches)
+    monkeypatch.setattr(
+        scene_cut_guard,
+        "build_scene_cut_plans",
+        fake_build_scene_cut_plans,
+    )
     monkeypatch.setattr(main, "emit_gui_progress", lambda *args, **kwargs: None)
 
     asyncio.run(
@@ -437,6 +470,7 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
                 total_windows=1,
                 frames_multiply_factor=settings.FRAMES_MULTIPLY_FACTOR,
             ),
+            source_fps=30.0,
         )
     )
 
@@ -449,6 +483,10 @@ def test_process_batches_keeps_one_short_per_window_and_chunks_rife(
     assert video.short_calls == [
         ["batch_1", "batch_2", "batch_3", "batch_4", "batch_5", "batch_6"]
     ]
+    assert len(analysis_calls) == 1
+    assert analysis_calls[0]["static_min_run_frames"] == 15
+    assert received_guard_scans
+    assert all(scan is received_guard_scans[0] for scan in received_guard_scans)
 
 
 def test_process_batches_stops_after_short_builder_failure(monkeypatch, tmp_path):
@@ -486,8 +524,17 @@ def test_process_batches_stops_after_short_builder_failure(monkeypatch, tmp_path
         end_batch,
         max_retries=3,
         progress_callback=None,
+        frame_guard_scan=None,
+        source_fps=None,
     ):
-        _ = process_threads, ai_threads, ai_tool_path, max_retries
+        _ = (
+            process_threads,
+            ai_threads,
+            ai_tool_path,
+            max_retries,
+            frame_guard_scan,
+            source_fps,
+        )
         calls.append((processing_type.value, start_batch, end_batch))
         output_dir = {
             improve.ProcessingType.UPSCALE: settings.UPSCALED_BATCHES_DIR,
@@ -560,6 +607,7 @@ def test_short_video_builder_is_throttled(monkeypatch, tmp_path):
             return self.alive
 
         def join(self, timeout=None):
+            _ = timeout
             self.join_calls += 1
             self.alive = False
             self.exitcode = 0
@@ -606,6 +654,7 @@ def test_short_video_wait_drains_queue_before_join(monkeypatch, tmp_path):
             raise AssertionError("builder process must not be terminated")
 
         def join(self, timeout=None):
+            _ = timeout
             self.join_calls += 1
             if not self.queue.items:
                 self.exitcode = 0
@@ -702,6 +751,7 @@ def test_short_video_wait_logs_only_on_state_change(monkeypatch, tmp_path):
             return not self.queue.emitted_second
 
         def join(self, timeout=None):
+            _ = timeout
             if self.queue.emitted_second:
                 self.exitcode = 0
 

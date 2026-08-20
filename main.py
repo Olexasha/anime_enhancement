@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -496,9 +497,15 @@ async def process_batches(
     progress: PipelineProgress,
     progress_start_batch: int | None = None,
     progress_end_batch: int | None = None,
+    source_fps: float | None = None,
 ) -> list[Any]:
     from src.config import settings
+    from src.frames.frames_helpers import count_frames_in_certain_batches
     from src.frames.improve import ProcessingType, improve_batches
+    from src.frames.scene_cut_guard import (
+        build_scene_cut_plans,
+        calculate_static_scene_min_run_frames,
+    )
     from src.utils.cleanup import maybe_cleanup_after_stage
     from src.utils.logger import logger
 
@@ -591,6 +598,44 @@ async def process_batches(
         _check_short_video_builders(video)
         end_batch = min(start_batch + threads - 1, end_batch_to_improve)
         logger.info(f"Обработка батчей с {start_batch} по {end_batch}")
+        frame_guard_scan = None
+        should_analyze_frame_guards = settings.STATIC_SCENE_GUARD_ENABLED or (
+            settings.ENABLE_INTERPOLATION and settings.SCENE_CUT_GUARD_ENABLED
+        )
+        if should_analyze_frame_guards:
+            batch_range = range(start_batch, end_batch + 1)
+            static_min_run_frames = calculate_static_scene_min_run_frames(
+                source_fps,
+                settings.STATIC_SCENE_MIN_DURATION_SECONDS,
+            )
+            analysis_started = time.perf_counter()
+            frame_guard_scan = build_scene_cut_plans(
+                input_root=settings.INPUT_BATCHES_DIR,
+                batch_numbers=batch_range,
+                image_format=settings.OUTPUT_IMAGE_FORMAT,
+                method=settings.SCENE_CUT_DETECTION_METHOD,
+                threshold=settings.SCENE_CUT_THRESHOLD,
+                min_scene_frames=settings.SCENE_CUT_MIN_SCENE_FRAMES,
+                static_min_run_frames=static_min_run_frames,
+            )
+            analyzed_frames = count_frames_in_certain_batches(
+                settings.INPUT_BATCHES_DIR,
+                batch_range,
+            )
+            static_runs = (
+                frame_guard_scan.static_runs
+                if settings.STATIC_SCENE_GUARD_ENABLED
+                else ()
+            )
+            static_frames = sum(run.frame_count for run in static_runs)
+            logger.info(
+                "Frame Guard analysis: "
+                f"frames={analyzed_frames}, cuts={len(frame_guard_scan.cuts)}, "
+                f"static runs={len(static_runs)}, static frames={static_frames} "
+                f"({static_frames * 100 / max(1, analyzed_frames):.1f}%), "
+                f"min static run={static_min_run_frames} frames, "
+                f"time={time.perf_counter() - analysis_started:.3f} s"
+            )
 
         if settings.ENABLE_DENOISE:
             await improve_batches(
@@ -600,6 +645,8 @@ async def process_batches(
                 ai_waifu2x_path,
                 start_batch,
                 end_batch,
+                frame_guard_scan=frame_guard_scan,
+                source_fps=source_fps,
                 progress_callback=lambda percent,
                 meta=None,
                 batch_start=start_batch,
@@ -631,6 +678,8 @@ async def process_batches(
             ai_realesrgan_path,
             start_batch,
             end_batch,
+            frame_guard_scan=frame_guard_scan,
+            source_fps=source_fps,
             progress_callback=lambda percent,
             meta=None,
             batch_start=start_batch,
@@ -676,6 +725,8 @@ async def process_batches(
                     ai_rife_path,
                     batches[0],
                     batches[-1],
+                    frame_guard_scan=frame_guard_scan,
+                    source_fps=source_fps,
                     progress_callback=lambda percent,
                     meta=None,
                     batch_start=batches[0],
@@ -884,6 +935,7 @@ async def run_pipeline() -> None:
                     progress,
                     progress_start_batch=settings.START_BATCH_TO_IMPROVE,
                     progress_end_batch=end_batch_to_improve,
+                    source_fps=fps,
                 )
             )
         print_bottom("улучшенные короткие видео сгенерированы")

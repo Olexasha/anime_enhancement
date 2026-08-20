@@ -17,6 +17,8 @@ def test_defaults_are_valid_without_input_requirement():
     assert config.INTERMEDIATE_VIDEO_PIX_FMT == "yuv444p"
     assert config.KEEP_TEMP_FILES is False
     assert config.SCENE_CUT_GUARD_ENABLED is True
+    assert config.STATIC_SCENE_GUARD_ENABLED is True
+    assert config.STATIC_SCENE_MIN_DURATION_SECONDS == 0.5
     assert config.SCENE_CUT_DETECTION_METHOD == "auto"
     assert config.SCENE_CUT_THRESHOLD == 0.42
     assert config.SCENE_CUT_MIN_SCENE_FRAMES == 6

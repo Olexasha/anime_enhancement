@@ -72,6 +72,8 @@ class PipelineConfig:
     ENABLE_SPATIAL_TTA_MODE: bool = False
     ENABLE_TEMPORAL_TTA_MODE: bool = False
     SCENE_CUT_GUARD_ENABLED: bool = True
+    STATIC_SCENE_GUARD_ENABLED: bool = True
+    STATIC_SCENE_MIN_DURATION_SECONDS: float = 0.5
     SCENE_CUT_DETECTION_METHOD: str = "auto"
     SCENE_CUT_THRESHOLD: float = 0.42
     SCENE_CUT_MIN_SCENE_FRAMES: int = 6
@@ -229,6 +231,8 @@ class PipelineConfig:
             errors.append("SCENE_CUT_THRESHOLD должен быть от 0 до 1")
         if self.SCENE_CUT_MIN_SCENE_FRAMES < 1:
             errors.append("SCENE_CUT_MIN_SCENE_FRAMES должен быть больше 0")
+        if self.STATIC_SCENE_MIN_DURATION_SECONDS <= 0:
+            errors.append("STATIC_SCENE_MIN_DURATION_SECONDS должен быть больше 0")
         return errors
 
 

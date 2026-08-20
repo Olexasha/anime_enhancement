@@ -18,6 +18,8 @@ def test_gui_import_and_window_smoke():
     assert "FINAL_VIDEO" not in DETAIL_FIELDS
     assert not {
         "SCENE_CUT_GUARD_ENABLED",
+        "STATIC_SCENE_GUARD_ENABLED",
+        "STATIC_SCENE_MIN_DURATION_SECONDS",
         "SCENE_CUT_DETECTION_METHOD",
         "SCENE_CUT_THRESHOLD",
         "SCENE_CUT_MIN_SCENE_FRAMES",
